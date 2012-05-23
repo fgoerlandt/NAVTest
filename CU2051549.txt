@@ -1,0 +1,2510 @@
+OBJECT Codeunit 2051549 WMS Scan Outbound Functions
+{
+  OBJECT-PROPERTIES
+  {
+    Date=26/04/12;
+    Time=18:05:23;
+    Modified=Yes;
+    Version List=SPHINXwms3,Distec;
+  }
+  PROPERTIES
+  {
+    OnRun=VAR
+            lrecWMSUserSetupDetail@1000000000 : Record 2051539;
+          BEGIN
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      txcOK@1000000003 : TextConst 'NLB=#00';
+      cduWMSGenFunct@1000000012 : Codeunit 2051538;
+      cduWMSScanGenFunct@1000000002 : Codeunit 2051537;
+      objType@1000000013 : 'Table,Form,Report,Dataport,Codeunit,XMLport,MenuSuite';
+      txtError@1000000014 : Text[250];
+      recWMSSetup@1000000000 : Record 2051536;
+      cduWMSOutbFunct@1000000001 : Codeunit 2051550;
+      blnBinType@1000000004 : ARRAY [6] OF Boolean;
+
+    PROCEDURE fctCheckStatusTP@1000000001(pcdeUserID@1000000001 : Code[20];pcdeBarcode@1000000000 : Code[20];VAR ptxtStatus@1000000009 : Text[30];VAR pcdeBin@1000000010 : Code[20];VAR pintLineNo@1000000011 : Integer;VAR pblnBarcodeIsLP@1000000017 : Boolean;VAR pchrMsgType@1000000003 : Char;VAR ptxtMessage@1000000002 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000004 : Record 2051539;
+      lrecTransportHeader@1000000005 : Record 2051575;
+      lrecTransportLine@1000000006 : Record 2051576;
+      lrecOpenTransOutb@1000000007 : Record 2051552;
+      lrecOpenTransOutb2@1000000019 : Record 2051552;
+      lrecPostedTransOutb@1000000016 : Record 2051553;
+      lrecLicensePlate@1000000008 : Record 2051546;
+      ltmpLicensePlate@1000000014 : TEMPORARY Record 2051546;
+      lrecVendor@1000000022 : Record 23;
+      lcdeTempLP@1000000020 : Code[20];
+      lcdeShippingAgent@1000000015 : Code[10];
+      ldatDate@1000000018 : Date;
+      loptBarcodeType@1000000021 : 'Not Found,Transport Order,License Plate,Vendor';
+      lintTotal@1000000012 : Integer;
+      lintProgress@1000000013 : Integer;
+    BEGIN
+      //SH1
+      //PARAMETERS
+      // pcdeUserID
+      // pcdeBarcode
+      // ptxtStatus      [x]
+      // pcdeBin         [x]
+      // pintLineNo      [x]
+      // pblnBarcodeIsLP [x]
+      // pchrMsgType     [x]
+      // ptxtMessage     [x]
+
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      IF NOT fctGetTransportHeader(pcdeBarcode,lrecWMSUserSetupDetail,lrecTransportHeader,pchrMsgType,ptxtMessage) THEN BEGIN
+        pchrMsgType := 'O';
+        ptxtMessage := txcOK;
+      END ELSE
+        loptBarcodeType := loptBarcodeType::"Transport Order";
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        lrecLicensePlate.RESET;
+        lrecLicensePlate.SETRANGE("License Plate",pcdeBarcode);
+        lrecLicensePlate.SETRANGE(Type,lrecLicensePlate.Type::Collection);
+        IF NOT lrecLicensePlate.ISEMPTY THEN BEGIN
+          loptBarcodeType := loptBarcodeType::"License Plate";
+          pblnBarcodeIsLP := TRUE;
+        END;
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        lrecVendor.RESET;
+        lrecVendor.SETRANGE("No.",pcdeBarcode);
+        lrecVendor.SETRANGE("Shipping Agent",TRUE);
+        IF NOT lrecVendor.ISEMPTY THEN
+          loptBarcodeType := loptBarcodeType::Vendor;
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,87,ptxtMessage);
+        EXIT;
+      END;
+
+      recWMSSetup.GET;
+
+      CASE loptBarcodeType OF
+
+        loptBarcodeType::"Transport Order":
+          BEGIN
+
+            lrecTransportHeader.CALCFIELDS("WMS Status");
+            IF lrecTransportHeader."WMS Status" >= lrecTransportHeader."WMS Status"::Loaded THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,3,ptxtMessage);
+              EXIT;
+            END;
+
+            IF lrecTransportHeader."WMS Status" <> lrecTransportHeader."WMS Status"::Picked THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,4,ptxtMessage);
+              EXIT;
+            END;
+
+            IF lrecTransportHeader."Loading Gate" = '' THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,55,ptxtMessage);
+              EXIT;
+            END;
+
+            //WMS 2011-02-24 FGOT BEGIN
+            lrecTransportLine.RESET;
+            lrecTransportLine.SETRANGE("No.",pcdeBarcode);
+            lrecTransportLine.SETRANGE("WMS Status",lrecTransportHeader."WMS Status"::Picked);
+            IF NOT lrecTransportLine.FINDFIRST THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,5,ptxtMessage);
+              EXIT;
+            END;
+
+            lrecOpenTransOutb.RESET;
+            lrecOpenTransOutb.SETCURRENTKEY("Transport No.","Execution By User","Grouping ID","Order No.","Order Line No.");
+            lrecOpenTransOutb.SETRANGE("Transport No.",pcdeBarcode);
+            lrecOpenTransOutb.SETFILTER("Execution By User",'%1|%2','',pcdeUserID);
+            lrecOpenTransOutb.SETRANGE("Ship Transaction",TRUE);
+            IF NOT lrecOpenTransOutb.FINDFIRST THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,6,ptxtMessage);
+              EXIT;
+            END ELSE BEGIN
+              pcdeBin    := lrecOpenTransOutb."Bin (Take)";
+              pintLineNo := lrecOpenTransOutb."Entry No.";
+            END;
+
+            //Check progress of the shipping
+            //Total open transactions of labels
+            lrecOpenTransOutb.SETRANGE("Execution By User");
+            lrecOpenTransOutb.SETFILTER("License Plate",'%1','');
+            lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+            lintTotal += lrecOpenTransOutb.COUNT;
+
+            //Total open transactions of unique license plates
+            lrecOpenTransOutb.SETFILTER("License Plate",'<>%1','');
+            IF lrecOpenTransOutb.FINDSET THEN
+              REPEAT
+                IF NOT ltmpLicensePlate.GET(lrecOpenTransOutb."License Plate") THEN BEGIN
+                  ltmpLicensePlate."License Plate" := lrecOpenTransOutb."License Plate";
+                  ltmpLicensePlate.INSERT;
+                END;
+              UNTIL lrecOpenTransOutb.NEXT = 0;
+
+            lintTotal += ltmpLicensePlate.COUNT;
+            ltmpLicensePlate.DELETEALL;
+
+            //Total posted transactions of labels
+            lrecPostedTransOutb.RESET;
+            lrecPostedTransOutb.SETCURRENTKEY("Transport No.");
+            lrecPostedTransOutb.SETRANGE("Transport No.",pcdeBarcode);
+            lrecPostedTransOutb.SETRANGE("Ship Transaction",TRUE);
+            lrecPostedTransOutb.SETFILTER("License Plate",'%1','');
+            lrecPostedTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+            lintTotal += lrecPostedTransOutb.COUNT;
+            lintProgress := lrecPostedTransOutb.COUNT;
+
+            //Total posted transactions of unique license plates
+            lrecPostedTransOutb.SETFILTER("License Plate",'<>%1','');
+            IF lrecPostedTransOutb.FINDSET THEN
+              REPEAT
+                IF NOT ltmpLicensePlate.GET(lrecPostedTransOutb."License Plate") THEN BEGIN
+                  ltmpLicensePlate."License Plate" := lrecPostedTransOutb."License Plate";
+                  ltmpLicensePlate.INSERT;
+                END;
+              UNTIL lrecPostedTransOutb.NEXT = 0;
+
+            lintProgress += ltmpLicensePlate.COUNT;
+            lintTotal += ltmpLicensePlate.COUNT;
+            ptxtStatus := STRSUBSTNO('%1 / %2',lintProgress,lintTotal);
+            //WMS 2011-02-24 FGOT END
+
+          END;
+
+        loptBarcodeType::"License Plate",loptBarcodeType::Vendor:
+          BEGIN
+
+            CASE loptBarcodeType OF
+              loptBarcodeType::"License Plate":
+                BEGIN
+                  lrecOpenTransOutb.RESET;
+                  lrecOpenTransOutb.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+                  lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+                  lrecOpenTransOutb.SETRANGE("Collect License Plate",pcdeBarcode);
+                  IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+                    lrecPostedTransOutb.RESET;
+                    lrecPostedTransOutb.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+                    lrecPostedTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+                    lrecPostedTransOutb.SETRANGE("Collect License Plate",pcdeBarcode);
+                    IF NOT lrecPostedTransOutb.ISEMPTY THEN
+                      cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,88,ptxtMessage)
+                    ELSE
+                      cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,89,ptxtMessage);
+
+                    pchrMsgType := 'E';
+                    EXIT;
+                  END;
+                END;
+              loptBarcodeType::Vendor:
+                BEGIN
+                  lrecOpenTransOutb.RESET;
+                  lrecOpenTransOutb.SETCURRENTKEY("Transaction Type");
+                  lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+                  lrecOpenTransOutb.SETRANGE("Shipping Agent Code",pcdeBarcode);
+                  IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+                    pchrMsgType := 'E';
+                    cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,97,ptxtMessage);
+                    ptxtMessage := STRSUBSTNO(ptxtMessage,pcdeBarcode);
+                    EXIT;
+                  END;
+                END;
+            END;
+
+            lrecOpenTransOutb.FINDFIRST;
+            pcdeBin    := lrecOpenTransOutb."Bin (Take)";
+            pintLineNo := lrecOpenTransOutb."Entry No.";
+            lcdeShippingAgent := lrecOpenTransOutb."Shipping Agent Code";
+
+            lrecOpenTransOutb2.RESET;
+            lrecOpenTransOutb2.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+            lrecOpenTransOutb2.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+            lrecOpenTransOutb2.SETRANGE("Shipping Agent Code",lcdeShippingAgent);
+            lrecOpenTransOutb2.FINDFIRST;
+            ldatDate := lrecOpenTransOutb2."Creation Date";
+
+            //Check progress of the shipping
+            //Total open transactions of labels
+            lrecOpenTransOutb.SETRANGE("Collect License Plate");
+            lrecOpenTransOutb.SETFILTER("License Plate",'%1','');
+            lrecOpenTransOutb.SETRANGE("Shipping Agent Code",lcdeShippingAgent);
+            lrecOpenTransOutb.SETFILTER("Creation Date",'>=%1',ldatDate);
+            lintTotal += lrecOpenTransOutb.COUNT;
+
+            //Total open transactions of unique license plates
+            lrecOpenTransOutb.SETFILTER("License Plate",'<>%1','');
+            IF lrecOpenTransOutb.FINDSET THEN
+              REPEAT
+                IF lrecOpenTransOutb."Collect License Plate" <> '' THEN
+                  lcdeTempLP := lrecOpenTransOutb."Collect License Plate"
+                ELSE
+                  lcdeTempLP := lrecOpenTransOutb."License Plate";
+
+                IF NOT ltmpLicensePlate.GET(lcdeTempLP) THEN BEGIN
+                  ltmpLicensePlate."License Plate" := lcdeTempLP;
+                  ltmpLicensePlate.INSERT;
+                END;
+              UNTIL lrecOpenTransOutb.NEXT = 0;
+
+            lintTotal += ltmpLicensePlate.COUNT;
+            ltmpLicensePlate.DELETEALL;
+
+            //Total posted transactions of labels
+            lrecPostedTransOutb.RESET;
+            lrecPostedTransOutb.SETRANGE("Ship Transaction",TRUE);
+            lrecPostedTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+            lrecPostedTransOutb.SETRANGE("Shipping Agent Code",lcdeShippingAgent);
+            lrecPostedTransOutb.SETFILTER("Creation Date",'>=%1',ldatDate);
+            lrecPostedTransOutb.SETFILTER("License Plate",'%1','');
+            lintTotal += lrecPostedTransOutb.COUNT;
+            lintProgress := lrecPostedTransOutb.COUNT;
+
+            //Total posted transactions of unique license plates
+            lrecPostedTransOutb.SETFILTER("License Plate",'<>%1','');
+            IF lrecPostedTransOutb.FINDSET THEN
+              REPEAT
+                IF lrecPostedTransOutb."Collect License Plate" <> '' THEN
+                  lcdeTempLP := lrecPostedTransOutb."Collect License Plate"
+                ELSE
+                  lcdeTempLP := lrecPostedTransOutb."License Plate";
+
+                IF NOT ltmpLicensePlate.GET(lcdeTempLP) THEN BEGIN
+                  ltmpLicensePlate."License Plate" := lcdeTempLP;
+                  ltmpLicensePlate.INSERT;
+                END;
+              UNTIL lrecPostedTransOutb.NEXT = 0;
+
+            lintProgress += ltmpLicensePlate.COUNT;
+            lintTotal += ltmpLicensePlate.COUNT;
+            ptxtStatus := STRSUBSTNO('%1 / %2',lintProgress,lintTotal);
+
+          END;
+
+      END;
+    END;
+
+    PROCEDURE fctOverviewTPLines@1000000000(pcdeUserID@1000000006 : Code[20];pcdeBarcode@1000000005 : Code[20];poptPickShip@1000000009 : 'Pick,Ship';VAR precOpenTransOutb@1000000004 : Record 2051552;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000008 : Record 2051539;
+      lrecTransportHeader@1000000007 : Record 2051575;
+      lrecTransportLine@1000000003 : Record 2051576;
+      lrecOpenTransOutb@1000000002 : Record 2051552;
+      lrecCustomer@1000000014 : Record 18;
+      lrecLicensePlate@1000000010 : Record 2051546;
+      lcduTransportMgt@1000000013 : Codeunit 2051555;
+      ltxtErrorMessage@1000000012 : Text[1024];
+      ltxtInfoMessage@1000000011 : Text[1024];
+      lblnBarcodeIsLP@1000000015 : Boolean;
+    BEGIN
+      //PC1 & SH4
+      //PARAMETERS
+      // pcdeUserID
+      // pcdeTransportNo
+      // poptPickShip
+      // precOpenTransOutb [x]
+      // pchrMsgType       [x]
+      // ptxtMessage       [x]
+
+      recWMSSetup.GET;
+
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      IF NOT fctGetTransportHeader(pcdeBarcode,lrecWMSUserSetupDetail,lrecTransportHeader,pchrMsgType,ptxtMessage) THEN BEGIN
+        IF poptPickShip = poptPickShip::Pick THEN
+          EXIT;
+
+        lrecLicensePlate.RESET;
+        lrecLicensePlate.SETRANGE("License Plate",pcdeBarcode);
+        lrecLicensePlate.SETRANGE(Type,lrecLicensePlate.Type::Collection);
+        IF lrecLicensePlate.ISEMPTY THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,87,ptxtMessage);
+          EXIT;
+        END ELSE BEGIN
+          pchrMsgType := 'O';
+          ptxtMessage := txcOK;
+          lblnBarcodeIsLP := TRUE;
+        END;
+      END;
+
+      IF NOT lblnBarcodeIsLP THEN BEGIN
+
+        lrecTransportHeader.CALCFIELDS("WMS Status");
+
+        CASE poptPickShip OF
+          poptPickShip::Pick:
+            CASE lrecTransportHeader."WMS Status" OF
+
+              lrecTransportHeader."WMS Status"::" ":
+                BEGIN
+                  pchrMsgType := 'E';
+                  cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,26,ptxtMessage);
+                  EXIT;
+                END;
+              lrecTransportHeader."WMS Status"::Picked:
+                BEGIN
+                  pchrMsgType := 'E';
+                  cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,56,ptxtMessage);
+                  EXIT;
+                END;
+              lrecTransportHeader."WMS Status"::Loaded,lrecTransportHeader."WMS Status"::Posted:
+                BEGIN
+                  IF lrecTransportHeader."Location Loading" = lrecTransportHeader."Loading Gate" THEN BEGIN
+                    pchrMsgType := 'E';
+                    cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,9,ptxtMessage);
+                    EXIT;
+                  END ELSE BEGIN
+                    pchrMsgType := 'E';
+                    cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,58,ptxtMessage);
+                    EXIT;
+                  END;
+                END;
+            END;
+          poptPickShip::Ship:
+            BEGIN
+              IF lrecTransportHeader."WMS Status" < lrecTransportHeader."WMS Status"::Picked THEN BEGIN
+                pchrMsgType := 'E';
+                cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,10,ptxtMessage);
+                EXIT;
+              END ELSE IF lrecTransportHeader."WMS Status" = lrecTransportHeader."WMS Status"::Loaded THEN BEGIN
+                pchrMsgType := 'E';
+                cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,58,ptxtMessage);
+                EXIT;
+              END;
+            END;
+        END;
+
+        lrecTransportLine.RESET;
+        lrecTransportLine.SETCURRENTKEY("No.","Grouping ID");
+        lrecTransportLine.SETRANGE("No.",lrecTransportHeader."No.");
+        IF lrecTransportLine.FINDFIRST THEN BEGIN
+          IF lrecCustomer.GET(lrecTransportLine."Sell-to Customer No.") THEN BEGIN
+            IF lrecCustomer.Blocked IN [lrecCustomer.Blocked::Ship,lrecCustomer.Blocked::All] THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,80,ptxtMessage);
+              EXIT;
+            END;
+          END;
+        END;
+
+        //Create transactions when "Start Picking" is scanner
+        IF (poptPickShip = poptPickShip::Pick) AND (recWMSSetup."Start Picking" = recWMSSetup."Start Picking"::Scanner) THEN
+          lcduTransportMgt.fctStartPickingScanner(lrecTransportHeader,FALSE,ltxtErrorMessage,ltxtInfoMessage);
+
+        //WMS0.006 2010-03-29 SBOT BEGIN
+        CASE poptPickShip OF
+          poptPickShip::Pick:
+            lrecTransportLine.SETFILTER("WMS Status",'%1|%2',lrecTransportHeader."WMS Status"::Released,
+              lrecTransportHeader."WMS Status"::Started);
+          poptPickShip::Ship:
+            lrecTransportLine.SETRANGE("WMS Status",lrecTransportHeader."WMS Status"::Picked);
+        END;
+        //WMS0.006 2010-03-29 SBOT END
+        lrecTransportLine.ASCENDING(FALSE);
+        IF NOT lrecTransportLine.FINDFIRST THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,11,txtError);
+          ptxtMessage := STRSUBSTNO(txtError,lrecTransportLine.TABLECAPTION);
+          EXIT;
+        END;
+
+      END;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETCURRENTKEY("Transport No.","Transport Line No.","Transaction Type","Grouping ID");
+
+      IF NOT lblnBarcodeIsLP THEN
+        lrecOpenTransOutb.SETRANGE("Transport No.",lrecTransportHeader."No.");
+
+      //WMS0.006 2010-03-29 SBOT BEGIN
+      CASE poptPickShip OF
+        poptPickShip::Pick:
+          BEGIN
+            lrecOpenTransOutb.SETFILTER("Transaction Type",'%1|%2',recWMSSetup."Trans. for Picking Full LP",
+              recWMSSetup."Trans. for Picking Open LP");
+
+            IF lrecTransportHeader."Respect Loading Sequence" THEN BEGIN
+              lrecOpenTransOutb.SETRANGE("Execution By User",'');
+
+              IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+                lrecOpenTransOutb.SETRANGE("Execution By User",pcdeUserID);
+
+                IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+                  pchrMsgType := 'E';
+                  cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,27,ptxtMessage);
+                  EXIT;
+                END ELSE
+                  precOpenTransOutb.COPY(lrecOpenTransOutb);
+              END ELSE BEGIN
+                lrecOpenTransOutb.MODIFYALL("Execution By User",pcdeUserID,FALSE);
+                lrecOpenTransOutb.SETRANGE("Execution By User",pcdeUserID);
+                precOpenTransOutb.COPY(lrecOpenTransOutb);
+              END;
+            END ELSE BEGIN
+              lrecOpenTransOutb.SETRANGE("Executed By User",'');
+
+              IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+                pchrMsgType := 'E';
+                cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,27,ptxtMessage);
+                EXIT;
+              END ELSE BEGIN
+                precOpenTransOutb.COPY(lrecOpenTransOutb);
+              END;
+            END;
+          END;
+        poptPickShip::Ship:
+          BEGIN
+            IF NOT lblnBarcodeIsLP THEN
+              IF lrecTransportHeader."Respect Loading Sequence" THEN
+                lrecOpenTransOutb.SETRANGE("Transport Line No.",lrecTransportLine."Line No.");
+
+            lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+            lrecOpenTransOutb.SETFILTER("Execution By User",'%1|%2','',pcdeUserID);
+
+            IF lblnBarcodeIsLP THEN
+              lrecOpenTransOutb.SETRANGE("Collect License Plate",pcdeBarcode);
+
+            IF NOT lrecOpenTransOutb.FINDFIRST THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,12,ptxtMessage);
+              EXIT;
+            END ELSE BEGIN
+              precOpenTransOutb.COPY(lrecOpenTransOutb);
+            END;
+
+          END;
+      END;
+      //WMS0.006 2010-03-29 SBOT END
+    END;
+
+    PROCEDURE fctCheckScannedLine@1000000002(pcdeUserID@1000000006 : Code[20];pcdeBarcode@1000000005 : Code[20];pcdePallet@1000000004 : Code[30];VAR pcdeLocationTo@1000000010 : Code[10];VAR pcdeBinTo@1000000011 : Code[20];VAR ptxtInfo@1000000012 : Text[50];VAR pintLineNo@1000000015 : Integer;VAR pintOverride@1000000016 : Integer;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000009 : Record 2051539;
+      lrecTransportHeader@1000000008 : Record 2051575;
+      lrecTransportLine@1000000007 : Record 2051576;
+      lrecOpenTransOutb@1000000003 : Record 2051552;
+      lrecOpenTransOutb2@1000000017 : Record 2051552;
+      lrecPostedTransOutb@1000000020 : Record 2051553;
+      lrecLicensePlate@1000000013 : Record 2051546;
+      lrecVendor@1000000019 : Record 23;
+      loptBarcodeType@1000000018 : 'Not Found,Transport Order,License Plate,Vendor';
+      lblnBarcodeFound@1000000002 : Boolean;
+    BEGIN
+      //SH2
+      //PARAMETERS
+      // pcdeUserID
+      // pcdeBarcode
+      // pcdePallet
+      // pcdeLocationTo [x]
+      // pcdeBinTo      [x]
+      // ptxtInfo       [x]
+      // pintLineNo     [x]
+      // pintOverride   [x]
+      // pchrMsgType    [x]
+      // ptxtMessage    [x]
+
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      IF NOT fctGetTransportHeader(pcdeBarcode,lrecWMSUserSetupDetail,lrecTransportHeader,pchrMsgType,ptxtMessage) THEN BEGIN
+        pchrMsgType := 'O';
+        ptxtMessage := txcOK;
+      END ELSE
+        loptBarcodeType := loptBarcodeType::"Transport Order";
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        lrecLicensePlate.RESET;
+        lrecLicensePlate.SETRANGE("License Plate",pcdePallet);
+        lrecLicensePlate.SETRANGE(Type,lrecLicensePlate.Type::Collection);
+        IF NOT lrecLicensePlate.ISEMPTY THEN
+          loptBarcodeType := loptBarcodeType::"License Plate";
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        lrecVendor.RESET;
+        lrecVendor.SETRANGE("No.",pcdeBarcode);
+        lrecVendor.SETRANGE("Shipping Agent",TRUE);
+        IF NOT lrecVendor.ISEMPTY THEN
+          loptBarcodeType := loptBarcodeType::Vendor;
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,87,ptxtMessage);
+        EXIT;
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"Transport Order" THEN BEGIN
+
+        lrecTransportHeader.CALCFIELDS("WMS Status");
+        IF lrecTransportHeader."WMS Status" >= lrecTransportHeader."WMS Status"::Loaded THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,16,ptxtMessage);
+          EXIT;
+        END;
+
+        IF lrecTransportHeader."WMS Status" <> lrecTransportHeader."WMS Status"::Picked THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,17,ptxtMessage);
+          EXIT;
+        END;
+
+        IF lrecWMSUserSetupDetail.Override THEN
+          pintOverride := 1;
+
+        pcdeLocationTo := lrecTransportHeader."Location Code";
+        pcdeBinTo      := lrecTransportHeader."Loading Gate";
+
+      END;
+
+      //WMS 2011-02-25 FGOT BEGIN
+      IF lrecOpenTransOutb.GET(pintLineNo) THEN BEGIN
+
+        IF pcdePallet IN [lrecOpenTransOutb."Label No.",lrecOpenTransOutb."License Plate",
+          lrecOpenTransOutb."Collect License Plate"] THEN BEGIN
+            lblnBarcodeFound := TRUE;
+            pintLineNo := lrecOpenTransOutb."Entry No.";
+        END;
+
+        IF NOT lblnBarcodeFound THEN BEGIN
+
+          lrecPostedTransOutb.RESET;
+          lrecPostedTransOutb.SETCURRENTKEY("Transport No.","Transaction Type","Grouping ID");
+
+          CASE loptBarcodeType OF
+            loptBarcodeType::"Transport Order": lrecPostedTransOutb.SETRANGE("Transport No.",lrecOpenTransOutb."Transport No.");
+            loptBarcodeType::Vendor: lrecPostedTransOutb.SETRANGE("Shipping Agent Code",lrecOpenTransOutb."Shipping Agent Code");
+          END;
+
+          lrecPostedTransOutb.SETRANGE("Ship Transaction",TRUE);
+          lrecPostedTransOutb.SETRANGE("Collect Transaction",FALSE);
+          lrecPostedTransOutb.SETRANGE("Collect License Plate",pcdePallet);
+          IF NOT lrecPostedTransOutb.ISEMPTY THEN BEGIN
+             pchrMsgType := 'E';
+             cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,63,ptxtMessage);
+             EXIT;
+          END ELSE BEGIN
+            lrecPostedTransOutb.SETRANGE("Collect License Plate");
+            lrecPostedTransOutb.SETRANGE("License Plate",pcdePallet);
+            IF NOT lrecPostedTransOutb.ISEMPTY THEN BEGIN
+               pchrMsgType := 'E';
+               cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,63,ptxtMessage);
+               EXIT;
+            END ELSE BEGIN
+               lrecPostedTransOutb.SETRANGE(lrecPostedTransOutb."License Plate");
+               lrecPostedTransOutb.SETRANGE(lrecPostedTransOutb."Label No.",pcdePallet);
+               IF NOT lrecPostedTransOutb.ISEMPTY THEN BEGIN
+                  pchrMsgType := 'E';
+                  cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,63,ptxtMessage);
+                  EXIT;
+               END;
+            END;
+          END;
+
+          lrecOpenTransOutb2.RESET;
+          lrecOpenTransOutb2.SETCURRENTKEY("Transport No.","Execution By User","Location (Take)","Zone (Take)","Bin (Take)");
+
+          CASE loptBarcodeType OF
+            loptBarcodeType::"Transport Order": lrecOpenTransOutb2.SETRANGE("Transport No.",lrecOpenTransOutb."Transport No.");
+            loptBarcodeType::Vendor: lrecOpenTransOutb2.SETRANGE("Shipping Agent Code",lrecOpenTransOutb."Shipping Agent Code");
+          END;
+
+          lrecOpenTransOutb2.SETFILTER("Execution By User",'%1|%2','',pcdeUserID);
+          lrecOpenTransOutb2.SETRANGE("Location (Take)",lrecOpenTransOutb."Location (Take)");
+          lrecOpenTransOutb2.SETRANGE("Zone (Take)",lrecOpenTransOutb."Zone (Take)");
+          lrecOpenTransOutb2.SETRANGE("Bin (Take)",lrecOpenTransOutb."Bin (Take)");
+          lrecOpenTransOutb2.SETRANGE("Ship Transaction",TRUE);
+          lrecOpenTransOutb2.SETRANGE("Collect License Plate",pcdePallet);
+          IF lrecOpenTransOutb2.ISEMPTY THEN BEGIN
+            lrecOpenTransOutb2.SETRANGE("Collect License Plate");
+            lrecOpenTransOutb2.SETRANGE("License Plate",pcdePallet);
+            IF lrecOpenTransOutb2.ISEMPTY THEN BEGIN
+               lrecOpenTransOutb2.SETRANGE(lrecOpenTransOutb2."License Plate");
+               lrecOpenTransOutb2.SETRANGE(lrecOpenTransOutb2."Label No.",pcdePallet);
+               IF lrecOpenTransOutb2.ISEMPTY THEN BEGIN
+                  pchrMsgType := 'E';
+                  cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,22,ptxtMessage);
+                  EXIT;
+               END ELSE BEGIN
+                  lrecOpenTransOutb2.SETRANGE(lrecOpenTransOutb2."Label No.");
+               END;
+            END;
+          END;
+
+          IF lrecTransportHeader."Respect Loading Sequence" THEN BEGIN
+            lrecOpenTransOutb2.SETRANGE("Order No.",lrecOpenTransOutb."Order No.");
+            lrecOpenTransOutb2.SETRANGE("Lot No.",lrecOpenTransOutb."Lot No.");
+            lrecOpenTransOutb2.SETRANGE("Grouping ID",lrecOpenTransOutb."Grouping ID");
+            IF lrecOpenTransOutb2.ISEMPTY THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,21,ptxtMessage);
+              EXIT;
+            END;
+          END;
+
+          IF lrecOpenTransOutb2.FINDSET THEN
+            REPEAT
+              IF lrecOpenTransOutb2."Collect License Plate" = pcdePallet THEN
+                lblnBarcodeFound := TRUE;
+
+              IF lrecOpenTransOutb2."License Plate" = pcdePallet THEN
+                lblnBarcodeFound := TRUE;
+
+              IF lrecOpenTransOutb2."Label No." = pcdePallet THEN
+                lblnBarcodeFound := TRUE;
+
+              IF lblnBarcodeFound THEN BEGIN
+                pintLineNo := lrecOpenTransOutb2."Entry No.";
+             END;
+
+            UNTIL (lrecOpenTransOutb2.NEXT = 0) OR lblnBarcodeFound;
+        END;
+
+        IF lblnBarcodeFound THEN BEGIN
+          lrecOpenTransOutb.RESET;
+          lrecOpenTransOutb.GET(pintLineNo);
+
+          IF ((pcdePallet = lrecOpenTransOutb."License Plate") OR (pcdePallet = lrecOpenTransOutb."Label No.")) AND
+            (lrecOpenTransOutb."Collect License Plate" <> '') THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,98,ptxtMessage);
+              EXIT;
+          END;
+
+          IF loptBarcodeType <> loptBarcodeType::"Transport Order" THEN BEGIN
+            pcdeLocationTo := lrecOpenTransOutb."Location (Place)";
+            pcdeBinTo      := lrecOpenTransOutb."Bin (Place)";
+
+            lrecTransportHeader.GET(lrecOpenTransOutb."Transport No.");
+            ptxtInfo := lrecTransportHeader."Shipping Agent Name";
+
+            IF lrecTransportHeader.Truck <> '' THEN
+              ptxtInfo := STRSUBSTNO('%1 - %2',ptxtInfo,lrecTransportHeader.Truck);
+
+            IF lrecTransportHeader.Driver <> '' THEN
+              ptxtInfo := STRSUBSTNO('%1 - %2',ptxtInfo,lrecTransportHeader.Driver);
+
+          END ELSE BEGIN
+            IF lrecTransportLine.GET(lrecOpenTransOutb."Transport No.",lrecOpenTransOutb."Transport Line No.") THEN
+              ptxtInfo := lrecTransportLine."Dest. Name";
+          END;
+        END ELSE BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,22,ptxtMessage);
+          EXIT;
+        END;
+
+      END;
+    END;
+
+    PROCEDURE fctCheckShipTo@1000000003(pcdeUserID@1000000006 : Code[20];pcdeTerminal@1000000014 : Code[10];pcdeBarcode@1000000005 : Code[20];pcdePallet@1000000004 : Code[30];pcdeBinTo@1000000002 : Code[20];pintLineNo@1000000018 : Integer;VAR pintMore@1000000019 : Integer;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecBin@1000000003 : Record 7354;
+      lrecWMSUserSetupDetail@1000000011 : Record 2051539;
+      lrecTransportHeader@1000000010 : Record 2051575;
+      lrecTransportLine@1000000009 : Record 2051576;
+      lrecOpenTransOutb@1000000008 : Record 2051552;
+      lrecOpenTransOutb2@1000000007 : Record 2051552;
+      lrecOpenTransOutbDummy@1000000013 : Record 2051552;
+      lrecPostedTransOutb@1000000015 : Record 2051553;
+      lrecAllOpenTrans@1000000017 : Record 2051578;
+      lrecLicensePlate@1000000021 : Record 2051546;
+      lrecVendor@1000000024 : Record 23;
+      lcdeTransportNo@1000000022 : Code[20];
+      lintTransportLine@1000000012 : Integer;
+      lintEntryNo@1000000016 : Integer;
+      loptBarcodeType@1000000023 : 'Not Found,Transport Order,License Plate,Vendor';
+      lblnPalletIsCLP@1000000025 : Boolean;
+    BEGIN
+      //SH3
+      //PARAMETERS
+      // pcdeUserID
+      // pcdeTerminal
+      // pcdeBarcode
+      // pcdePallet
+      // pcdeBinTo
+      // pintLineNo
+      // pintMore    [x]
+      // pchrMsgType [x]
+      // ptxtMessage [x]
+
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      IF NOT fctGetTransportHeader(pcdeBarcode,lrecWMSUserSetupDetail,lrecTransportHeader,pchrMsgType,ptxtMessage) THEN BEGIN
+        pchrMsgType := 'O';
+        ptxtMessage := txcOK;
+      END ELSE
+        loptBarcodeType := loptBarcodeType::"Transport Order";
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        lrecLicensePlate.RESET;
+        lrecLicensePlate.SETRANGE("License Plate",pcdeBarcode);
+        lrecLicensePlate.SETRANGE(Type,lrecLicensePlate.Type::Collection);
+        IF NOT lrecLicensePlate.ISEMPTY THEN
+          loptBarcodeType := loptBarcodeType::"License Plate";
+      END;
+
+      lrecLicensePlate.RESET;
+      lrecLicensePlate.SETRANGE("License Plate",pcdePallet);
+      lrecLicensePlate.SETRANGE(Type,lrecLicensePlate.Type::Collection);
+      lblnPalletIsCLP := NOT lrecLicensePlate.ISEMPTY;
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        lrecVendor.RESET;
+        lrecVendor.SETRANGE("No.",pcdeBarcode);
+        lrecVendor.SETRANGE("Shipping Agent",TRUE);
+        IF NOT lrecVendor.ISEMPTY THEN
+          loptBarcodeType := loptBarcodeType::Vendor;
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"Not Found" THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,87,ptxtMessage);
+        EXIT;
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"Transport Order" THEN BEGIN
+
+        lrecTransportHeader.CALCFIELDS("WMS Status");
+        IF lrecTransportHeader."WMS Status" >= lrecTransportHeader."WMS Status"::Loaded THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,16,ptxtMessage);
+          EXIT;
+        END;
+
+        IF lrecTransportHeader."WMS Status" <> lrecTransportHeader."WMS Status"::Picked THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,17,ptxtMessage);
+          EXIT;
+        END;
+
+      END;
+
+      IF NOT lrecBin.GET(lrecWMSUserSetupDetail.Location,pcdeBinTo) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,23,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,lrecWMSUserSetupDetail.Location,pcdeBinTo);
+        EXIT;
+      END;
+
+      lrecOpenTransOutb.SETRANGE("Entry No.",pintLineNo);
+      IF NOT lrecOpenTransOutb.FINDFIRST THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,20,ptxtMessage);
+        EXIT;
+      END;
+
+      IF lrecBin.Code <> lrecOpenTransOutb."Bin (Place)" THEN BEGIN
+        IF NOT lrecWMSUserSetupDetail.Override THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,60,ptxtMessage);
+          EXIT;
+        END;
+
+        IF lrecBin."Zone Code" <> lrecOpenTransOutb."Zone (Place)" THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,61,ptxtMessage);
+          EXIT;
+        END;
+      END;
+
+      IF pcdePallet IN [lrecOpenTransOutb."License Plate",lrecOpenTransOutb."Collect License Plate"] THEN BEGIN
+
+        recWMSSetup.GET;
+        lrecOpenTransOutb2.RESET;
+
+        IF loptBarcodeType = loptBarcodeType::"License Plate" THEN BEGIN
+          lrecOpenTransOutb2.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+        END ELSE BEGIN
+          lrecOpenTransOutb2.SETRANGE("Transport No.",lrecOpenTransOutb."Transport No.");
+        END;
+
+        lrecOpenTransOutb2.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+
+        IF lrecOpenTransOutb."Collect License Plate" = pcdePallet THEN
+          lrecOpenTransOutb2.SETRANGE("Collect License Plate",lrecOpenTransOutb."Collect License Plate");
+
+        IF lrecOpenTransOutb."License Plate" = pcdePallet THEN
+          lrecOpenTransOutb2.SETRANGE("License Plate",lrecOpenTransOutb."License Plate");
+
+      END ELSE
+        lrecOpenTransOutb2.COPYFILTERS(lrecOpenTransOutb);
+
+      IF lrecOpenTransOutb2.FINDSET THEN BEGIN
+
+        IF loptBarcodeType = loptBarcodeType::"Transport Order" THEN BEGIN
+          lrecOpenTransOutbDummy.RESET;
+          lrecOpenTransOutbDummy.SETCURRENTKEY("Transport No.","Transport Line No.","Transaction Type");
+          lrecOpenTransOutbDummy.SETRANGE("Transport No.",pcdeBarcode);
+        END;
+
+        REPEAT
+
+          lintTransportLine := lrecOpenTransOutb2."Transport Line No.";
+          lcdeTransportNo   := lrecOpenTransOutb2."Transport No.";
+
+          lrecOpenTransOutbDummy.GET(lrecOpenTransOutb2."Entry No.");
+          lrecOpenTransOutbDummy."Executed By Terminal" := pcdeTerminal;
+          lrecOpenTransOutbDummy."Time Executed"        := TIME;
+          lrecOpenTransOutbDummy."Date Executed"        := WORKDATE;
+          lrecOpenTransOutbDummy."Location (Place)"     := lrecBin."Location Code";
+          lrecOpenTransOutbDummy."Bin (Place)"          := lrecBin.Code;
+          lrecOpenTransOutbDummy."Zone (Place)"         := lrecBin."Zone Code";
+          lrecOpenTransOutbDummy."Executed By User"     := pcdeUserID;
+          lrecOpenTransOutbDummy.MODIFY;
+
+          cduWMSGenFunct.fctMovePalletOutbound(lrecOpenTransOutbDummy);
+
+          IF lrecPostedTransOutb.FINDLAST THEN
+            lintEntryNo := lrecPostedTransOutb."Entry No." + 10
+          ELSE
+            lintEntryNo := 10;
+
+          lrecPostedTransOutb.RESET;
+          lrecPostedTransOutb.TRANSFERFIELDS(lrecOpenTransOutbDummy);
+          lrecPostedTransOutb."Entry No." := lintEntryNo;
+          lrecPostedTransOutb.INSERT(TRUE);
+
+          IF lrecAllOpenTrans.GET(lrecOpenTransOutbDummy."All Open Trans. Entry No.") THEN
+            lrecAllOpenTrans.DELETE(TRUE);
+
+          lrecOpenTransOutbDummy.DELETE(TRUE);
+
+          IF loptBarcodeType = loptBarcodeType::"Transport Order" THEN
+            lrecOpenTransOutbDummy.SETRANGE("Transport Line No.",lintTransportLine)
+          ELSE BEGIN
+            lrecOpenTransOutbDummy.RESET;
+            lrecOpenTransOutbDummy.SETRANGE("Transport No.",lcdeTransportNo);
+            lrecOpenTransOutbDummy.SETRANGE("Transport Line No.",lintTransportLine);
+          END;
+
+          IF lrecOpenTransOutbDummy.ISEMPTY THEN
+            IF lrecTransportLine.GET(lcdeTransportNo,lintTransportLine) THEN BEGIN
+              lrecTransportLine."WMS Status" := lrecTransportLine."WMS Status"::Loaded;
+              lrecTransportLine.MODIFY;
+            END;
+
+        UNTIL lrecOpenTransOutb2.NEXT = 0;
+      END;
+
+      IF loptBarcodeType = loptBarcodeType::"License Plate" THEN
+        pintMore := 0
+      ELSE BEGIN
+        lrecOpenTransOutb.RESET;
+
+        CASE loptBarcodeType OF
+          loptBarcodeType::"Transport Order": lrecOpenTransOutb.SETRANGE("Transport No.",pcdeBarcode);
+          loptBarcodeType::Vendor: lrecOpenTransOutb.SETRANGE("Shipping Agent Code",pcdeBarcode);
+        END;
+
+        lrecOpenTransOutb.SETRANGE("Ship Transaction",TRUE);
+        lrecOpenTransOutb.SETFILTER("Execution By User",'%1|%2','',pcdeUserID);
+        IF lrecOpenTransOutb.FINDFIRST THEN
+          pintMore := 1;
+      END;
+    END;
+
+    PROCEDURE fctCheckLabelPick@1000000004(pcdeUserID@1000000003 : Code[20];pcdeTerminal@1000000002 : Code[10];pintLineNo@1000000004 : Integer;pcdeBarcode@1000000005 : Code[30];pcdeReasonCode@1000000016 : Code[10];VAR precOpenTransOutb@1000000012 : Record 2051552;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000006 : Record 2051539;
+      lrecOpenTransOutb1@1000000007 : Record 2051552;
+      lrecOpenTransOutb2@1000000011 : Record 2051552;
+      lrecOpenTransOutb3@1000000014 : Record 2051552;
+      lrecLabel@1000000008 : Record 2051545;
+      lrecBinContent@1000000009 : Record 7302;
+      lrecTransportHeader@1000000010 : Record 2051575;
+      lcdeBinTypeFilter@1000000013 : Code[200];
+    BEGIN
+      // PC2
+      //PARAMETERS
+      // pcdeUserID
+      // pcdeTerminal
+      // pintLineNo
+      // pcdebarcode
+      // pcdeReasonCode
+      // pchrMsgType [x]
+      // ptxtMessage [x]
+
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      recWMSSetup.GET;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      lrecOpenTransOutb1.LOCKTABLE;
+      IF NOT lrecOpenTransOutb1.GET(pintLineNo) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,29,ptxtMessage);
+        EXIT;
+      END;
+
+      IF NOT fctGetTransportHeader(lrecOpenTransOutb1."Transport No.",lrecWMSUserSetupDetail,lrecTransportHeader,
+        pchrMsgType,ptxtMessage) THEN
+          EXIT;
+
+      IF lrecOpenTransOutb1."Executed By User" <> '' THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,30,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,lrecOpenTransOutb1."Executed By User");
+        EXIT;
+      END;
+
+      IF NOT (lrecOpenTransOutb1."Execution By User" IN [pcdeUserID,'']) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,49,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,lrecOpenTransOutb1."Execution By User");
+        EXIT;
+      END;
+
+      IF NOT lrecLabel.GET(pcdeBarcode) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,31,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,pcdeBarcode);
+        EXIT;
+      END;
+
+      IF lrecLabel.Blocked THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,52,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,pcdeBarcode,lrecLabel.fctGetLastBlockingReasonDescr);
+        EXIT;
+      END;
+
+      // label exists on bin (take)?
+      cduWMSGenFunct.fctMakeBinTypeFilter(FALSE,FALSE,FALSE,TRUE,FALSE,FALSE,FALSE,blnBinType,lcdeBinTypeFilter);
+
+      lrecBinContent.RESET;
+      lrecBinContent.SETCURRENTKEY("Location Code","Bin Code","Item No.","Variant Code","Unit of Measure Code");
+      lrecBinContent.SETRANGE("Location Code",lrecOpenTransOutb1."Location (Take)");
+      lrecBinContent.SETRANGE("Bin Code",lrecOpenTransOutb1."Bin (Take)");
+      lrecBinContent.SETRANGE("Item No.",lrecOpenTransOutb1."Item No.");
+      lrecBinContent.SETRANGE("Variant Code",lrecOpenTransOutb1."Variant Code");
+      lrecBinContent.SETFILTER("Bin Type Code",lcdeBinTypeFilter);
+      lrecBinContent.SETRANGE("Lot No. Filter",lrecLabel."Lot No.");
+      lrecBinContent.SETRANGE("Label No. Filter",lrecLabel.Label);
+      lrecBinContent.SETFILTER(Quantity,'>%1',0);
+
+      IF lrecBinContent.ISEMPTY THEN BEGIN
+        lrecBinContent.SETRANGE("Bin Code");
+      END;
+
+      IF NOT lrecBinContent.FINDFIRST THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,62,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,pcdeBarcode);
+        EXIT;
+      END;
+
+      lrecBinContent.SETRANGE(Blocked,FALSE);
+      IF NOT lrecBinContent.FINDFIRST THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,32,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,pcdeBarcode);
+        EXIT;
+      END;
+
+      //check #bins?
+      IF lrecBinContent.COUNT <> 1 THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,53,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,pcdeBarcode);
+        EXIT;
+      END;
+
+      //lrecBinContent.CALCFIELDS("Quantity (base)");
+      //pdecQtyBase := lrecBinContent."Quantity (base)";
+
+      // label & bin already used in other open transaction?
+      lrecOpenTransOutb2.RESET;
+      lrecOpenTransOutb2.SETCURRENTKEY("Entry No.");
+      lrecOpenTransOutb2.SETFILTER("Entry No.",'<>%1',pintLineNo);
+      lrecOpenTransOutb2.SETRANGE("Location (Take)",lrecOpenTransOutb1."Location (Take)");
+      lrecOpenTransOutb2.SETRANGE("Bin (Take)",lrecBinContent."Bin Code");
+      lrecOpenTransOutb2.SETRANGE("Item No.",lrecOpenTransOutb1."Item No.");
+      lrecOpenTransOutb2.SETRANGE("Variant Code",lrecOpenTransOutb1."Variant Code");
+      lrecOpenTransOutb2.SETRANGE("Label No.",lrecLabel.Label);
+      IF NOT lrecOpenTransOutb2.ISEMPTY THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,33,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,pcdeBarcode);
+        EXIT;
+      END;
+
+      {
+      END ELSE IF lrecTransportHeader."Respect Loading Sequence" THEN BEGIN
+        // loading sequence respected?
+        lrecOpenTransOutb2.RESET;
+        lrecOpenTransOutb2.SETCURRENTKEY("Transport No.","Transport Line No.","Transaction Type","Grouping ID");
+        lrecOpenTransOutb2.SETRANGE("Transport No.",lrecOpenTransOutb1."Transport No.");
+        lrecOpenTransOutb2.SETFILTER("Transaction Type",'%1|%2',recWmsSetup."Trans. for Picking Full LP",
+          recWmsSetup."Trans. for Picking Open LP");
+        lrecOpenTransOutb2.SETFILTER("Grouping ID",'<%1',lrecOpenTransOutb1."Grouping ID");
+
+        IF NOT lrecOpenTransOutb2.ISEMPTY THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUser,objType::Codeunit,2051549,35,ptxtMessage);
+        END;
+      END;
+      }
+      //WMS 2011-02-22 FGOT END
+
+      IF (lrecLabel."Lot No." <> lrecOpenTransOutb1."Lot No.") AND (pcdeReasonCode = '') THEN BEGIN
+
+        lrecOpenTransOutb2.RESET;
+        lrecOpenTransOutb2.SETCURRENTKEY("Transport No.","Transport Line No.","Transaction Type","Grouping ID");
+        lrecOpenTransOutb2.SETRANGE("Transport No.",lrecOpenTransOutb1."Transport No.");
+        lrecOpenTransOutb2.SETFILTER("Transaction Type",'%1|%2',recWMSSetup."Trans. for Picking Full LP",
+          recWMSSetup."Trans. for Picking Open LP");
+
+        IF lrecTransportHeader."Respect Loading Sequence" THEN
+          lrecOpenTransOutb2.SETRANGE("Grouping ID",lrecOpenTransOutb1."Grouping ID");
+
+        lrecOpenTransOutb2.SETRANGE("Location (Take)",lrecOpenTransOutb1."Location (Take)");
+        lrecOpenTransOutb2.SETRANGE("Zone (Take)",lrecBinContent."Zone Code");
+        lrecOpenTransOutb2.SETRANGE("Bin (Take)",lrecBinContent."Bin Code");
+        lrecOpenTransOutb2.SETRANGE("Executed By User",'');
+        lrecOpenTransOutb2.SETRANGE("Item No.",lrecLabel."Item No.");
+        lrecOpenTransOutb2.SETRANGE("Lot No.",lrecLabel."Lot No.");
+
+        IF NOT lrecOpenTransOutb2.FINDFIRST THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,36,ptxtMessage);
+          EXIT;
+        END;
+
+        lrecOpenTransOutb1."Executed By User"     := '';
+        lrecOpenTransOutb1."Executed By Terminal" := '';
+        lrecOpenTransOutb1.MODIFY;
+
+        lrecOpenTransOutb2."Executed By User"     := pcdeUserID;
+        lrecOpenTransOutb2."Executed By Terminal" := pcdeTerminal;
+        lrecOpenTransOutb2."Label No."            := pcdeBarcode;
+        lrecOpenTransOutb2."Zone (Take)"          := lrecBinContent."Zone Code";
+        lrecOpenTransOutb2."Bin (Take)"           := lrecBinContent."Bin Code";
+        lrecOpenTransOutb2.MODIFY;
+
+        precOpenTransOutb := lrecOpenTransOutb2;
+
+      END ELSE BEGIN
+
+        lrecOpenTransOutb1."Executed By User"     := pcdeUserID;
+        lrecOpenTransOutb1."Executed By Terminal" := pcdeTerminal;
+        lrecOpenTransOutb1."Lot No."              := lrecLabel."Lot No.";
+        lrecOpenTransOutb1."Label No."            := lrecLabel.Label;
+        lrecOpenTransOutb1."Zone (Take)"          := lrecBinContent."Zone Code";
+        lrecOpenTransOutb1."Bin (Take)"           := lrecBinContent."Bin Code";
+        lrecOpenTransOutb1.MODIFY;
+
+        precOpenTransOutb := lrecOpenTransOutb1;
+
+      END;
+
+      IF lrecTransportHeader."Respect Loading Sequence" THEN BEGIN
+        lrecOpenTransOutb3.RESET;
+        lrecOpenTransOutb3.SETCURRENTKEY("Transport No.","Transport Line No.","Transaction Type","Grouping ID");
+        lrecOpenTransOutb3.SETRANGE("Transport No.",lrecOpenTransOutb1."Transport No.");
+        lrecOpenTransOutb3.SETFILTER("Transaction Type",'%1|%2',recWMSSetup."Trans. for Picking Full LP",
+          recWMSSetup."Trans. for Picking Open LP");
+        lrecOpenTransOutb3.MODIFYALL("Execution By User",pcdeUserID);
+      END;
+    END;
+
+    PROCEDURE fctCheckLabelQty@1000000005(pcodUser@1000000007 : Code[20];pcodTerminal@1000000006 : Code[10];pintLineNo@1000000005 : Integer;pdecQty@1000000003 : Decimal;pcodUom@1000000002 : Code[10];VAR precOpenTransOutb@1000000010 : Record 2051552;pblnSaveQuantity@1000000016 : Boolean;VAR pintOverride@1000000018 : Integer;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000004 : Record 2051539;
+      lrecOpenTransOutb@1000000008 : Record 2051552;
+      lrecBinContent@1000000009 : Record 7302;
+      lrecPostedTransOutb@1000000011 : Record 2051553;
+      lrecTransportLine@1000000012 : Record 2051576;
+      lcduUomMgt@1000000015 : Codeunit 5402;
+      lrecItem@1000000014 : Record 27;
+      ldecQtyBase@1000000013 : Decimal;
+      ldecQty@1000000017 : Decimal;
+    BEGIN
+      //WMS0.006 2010-03-30 SBOT
+      //PC3
+      //PARAMETERS
+      // pcodUser
+      // pcodTerminal
+      // pintLineNo
+      // pdecQty
+      // pcodUom
+      // precOpenTransOutb [x]
+      // pblnSaveQuantity
+      // pintOverride      [x]
+      // pchrMsgType       [x]
+      // ptxtMessage       [x]
+
+      recWMSSetup.GET;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcodUser,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      IF lrecWMSUserSetupDetail.Override THEN
+        pintOverride := 1;
+
+      lrecOpenTransOutb.LOCKTABLE;
+      IF NOT lrecOpenTransOutb.GET(pintLineNo) THEN BEGIN
+        // transaction exists?
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcodUser,objType::Codeunit,2051549,38,ptxtMessage);
+      END ELSE BEGIN
+       // negative qty not allowed
+       // vvae 18/02/2011
+       IF pdecQty < 0 THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcodUser,objType::Codeunit,2051549,59,ptxtMessage);
+       END ELSE BEGIN
+        // enough stock on bin (take)?
+        lrecItem.GET(lrecOpenTransOutb."Item No.");
+        ldecQtyBase := lcduUomMgt.GetQtyPerUnitOfMeasure(lrecItem,pcodUom) * pdecQty;
+        //MESSAGE('%1 %2 = %3',pdecQty,pcodUom,ldecQtyBase);
+
+        lrecBinContent.RESET;
+        lrecBinContent.SETCURRENTKEY("Location Code","Bin Code","Item No.","Variant Code","Unit of Measure Code");
+        lrecBinContent.SETRANGE("Location Code",lrecOpenTransOutb."Location (Take)");
+        lrecBinContent.SETRANGE("Bin Code",lrecOpenTransOutb."Bin (Take)");
+        lrecBinContent.SETRANGE("Item No.",lrecOpenTransOutb."Item No.");
+        lrecBinContent.SETRANGE("Variant Code",lrecOpenTransOutb."Variant Code");
+        lrecBinContent.SETRANGE("Unit of Measure Code",lrecItem."Base Unit of Measure");
+        lrecBinContent.SETRANGE("Label No. Filter",lrecOpenTransOutb."Label No.");
+        lrecBinContent.SETFILTER(Quantity,'>=%1',ldecQtyBase);
+
+        IF NOT lrecBinContent.ISEMPTY THEN BEGIN
+          IF NOT lrecTransportLine.GET(lrecOpenTransOutb."Transport No.",lrecOpenTransOutb."Transport Line No.") THEN BEGIN
+            pchrMsgType := 'E';
+            cduWMSGenFunct.fctGetMessage(pcodUser,objType::Codeunit,2051549,50,txtError);
+            ptxtMessage := STRSUBSTNO(txtError,lrecTransportLine.TABLECAPTION,lrecTransportLine."Line No.");
+          END ELSE BEGIN
+            // check on qty already picked
+            //lrecPostedTransOutb.RESET;
+            //lrecPostedTransOutb.SETCURRENTKEY("Transport No.","Transport Line No.","Transaction Type");
+            //lrecPostedTransOutb.SETRANGE("Transport No.",lrecOpenTransOutb."Transport No.");
+            //lrecPostedTransOutb.SETRANGE("Transport Line No.",lrecOpenTransOutb."Transport Line No.");
+            //lrecPostedTransOutb.SETRANGE("Transaction Type",lrecOpenTransOutb."Transaction Type");
+            //lrecPostedTransOutb.CALCSUMS(Quantity,"Quantity (Base)");
+
+            // 18/02/2011 VVAE
+            lrecPostedTransOutb.RESET;
+            lrecPostedTransOutb.SETCURRENTKEY("Source Type","Order No.","Order Line No.","Pick Transaction","Pick Transaction 2",
+              "Transport No.","Transport Line No.");
+            lrecPostedTransOutb.SETRANGE("Source Type",lrecOpenTransOutb."Source Type");
+            lrecPostedTransOutb.SETRANGE("Order No.",lrecOpenTransOutb."Order No.");
+            lrecPostedTransOutb.SETRANGE("Pick Transaction",TRUE);
+            lrecPostedTransOutb.SETRANGE("Pick Transaction 2",FALSE);
+            lrecPostedTransOutb.SETRANGE("Transport No.",lrecOpenTransOutb."Transport No.");
+            lrecPostedTransOutb.SETRANGE("Transport Line No.",lrecOpenTransOutb."Transport Line No.");
+            lrecPostedTransOutb.CALCSUMS(Quantity,"Quantity (Base)");
+
+            IF (lrecPostedTransOutb."Quantity (Base)" + ldecQtyBase) > lrecTransportLine."Quantity To Ship (Base)" THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcodUser,objType::Codeunit,2051549,51,txtError);
+              CASE recWMSSetup."Unit of Measure Code Shipment" OF
+                recWMSSetup."Unit of Measure Code Shipment"::Base:
+                  ptxtMessage := STRSUBSTNO(txtError,lrecPostedTransOutb."Quantity (Base)", lrecPostedTransOutb."Base Unit of Measure"
+                           ,lrecTransportLine."Quantity (Base)",lrecTransportLine."Unit of Measure Code (Base)");
+                recWMSSetup."Unit of Measure Code Shipment"::Order:
+                  ptxtMessage := STRSUBSTNO(txtError,lrecPostedTransOutb.Quantity,lrecPostedTransOutb."Unit of Measure Code"
+                           ,lrecTransportLine.Quantity,lrecTransportLine."Unit of Measure Code");
+              END;
+            END ELSE BEGIN
+              IF pblnSaveQuantity THEN BEGIN
+
+                //WMS 2011-02-17 FGOT BEGIN
+                //lrecOpenTransOutb1.VALIDATE(Quantity,pdecQty);
+
+                IF lrecOpenTransOutb."Unit of Measure Code" = pcodUom THEN
+                  ldecQty := pdecQty
+                ELSE
+                  ldecQty := pdecQty / (lcduUomMgt.GetQtyPerUnitOfMeasure(lrecItem,lrecOpenTransOutb."Unit of Measure Code") /
+                    lcduUomMgt.GetQtyPerUnitOfMeasure(lrecItem,pcodUom));
+
+                lrecOpenTransOutb.VALIDATE(Quantity,ldecQty);
+                //WMS 2011-02-17 FGOT END
+
+                lrecOpenTransOutb.MODIFY(TRUE);
+
+
+              END;
+
+              precOpenTransOutb := lrecOpenTransOutb;
+            END
+          END
+        END ELSE BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcodUser,objType::Codeunit,2051549,39,txtError);
+          ptxtMessage := STRSUBSTNO(txtError,lrecOpenTransOutb."Label No.",lrecOpenTransOutb."Bin (Take)");
+        END;
+       END;
+      END;
+
+      IF pchrMsgType <> 'E' THEN BEGIN
+        pchrMsgType := 'O';
+        ptxtMessage := txcOK;
+      END;
+    END;
+
+    PROCEDURE fctCheckPickTo@1000000006(pcdeUserID@1000000003 : Code[20];pcdeTerminal@1000000002 : Code[10];pintLineNo@1000000007 : Integer;pcdeBin@1000000004 : Code[10];VAR pintMore@1000000015 : Integer;VAR pchrMsgType@1000000001 : Char;VAR ptxtErrorMessage@1000000000 : Text[1024];VAR ptxtInfoMessage@1000000014 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000005 : Record 2051539;
+      lrecBin@1000000006 : Record 7354;
+      lrecOpenTransOutb@1000000008 : Record 2051552;
+      lrecTransportLine@1000000009 : Record 2051576;
+      lcdeTransportNo@1000000012 : Code[20];
+    BEGIN
+      //PC4
+      //PARAMETERS
+      // pcdeUserID
+      // pcdeTerminal
+      // pintLineNo
+      // pcdeBin
+      // pintMore         [x]
+      // pchrMsgType      [x]
+      // ptxtErrorMessage [x]
+      // ptxtInfoMessage  [x]
+
+      pchrMsgType := 'O';
+      ptxtErrorMessage := txcOK;
+
+      recWMSSetup.GET;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtErrorMessage) THEN
+        EXIT;
+
+      lrecOpenTransOutb.LOCKTABLE;
+      IF NOT lrecOpenTransOutb.GET(pintLineNo) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,42,ptxtErrorMessage);
+        EXIT;
+      END;
+
+      IF NOT lrecBin.GET(lrecWMSUserSetupDetail.Location,pcdeBin) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,41,txtError);
+        ptxtErrorMessage := STRSUBSTNO(txtError,lrecWMSUserSetupDetail.Location,pcdeBin);
+        EXIT;
+      END;
+
+      IF lrecBin.Code <> lrecOpenTransOutb."Bin (Place)" THEN BEGIN
+        IF lrecWMSUserSetupDetail.Override THEN BEGIN
+          IF lrecBin."Zone Code" <> lrecOpenTransOutb."Zone (Place)" THEN BEGIN
+            pchrMsgType := 'E';
+            cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,61,ptxtErrorMessage);
+            EXIT;
+          END;
+        END ELSE BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,60,ptxtErrorMessage);
+          EXIT;
+        END;
+      END;
+
+      IF NOT lrecTransportLine.GET(lrecOpenTransOutb."Transport No.",lrecOpenTransOutb."Transport Line No.") THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,44,txtError);
+        ptxtErrorMessage := STRSUBSTNO(txtError,lrecTransportLine.TABLECAPTION,lrecTransportLine."Line No.");
+        EXIT;
+      END;
+
+      IF lrecTransportLine."WMS Status" <> lrecTransportLine."WMS Status"::Started THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,45,txtError);
+        ptxtErrorMessage := STRSUBSTNO(txtError,lrecTransportLine.TABLECAPTION);
+        EXIT;
+      END;
+
+      lcdeTransportNo := lrecOpenTransOutb."Transport No.";
+
+      lrecOpenTransOutb."Executed By User"     := pcdeUserID;
+      lrecOpenTransOutb."Executed By Terminal" := pcdeTerminal;
+      lrecOpenTransOutb."Time Executed"        := TIME;
+      lrecOpenTransOutb."Date Executed"        := WORKDATE;
+      lrecOpenTransOutb."Location (Place)"     := lrecBin."Location Code";
+      lrecOpenTransOutb."Zone (Place)"         := lrecBin."Zone Code";
+      lrecOpenTransOutb."Bin (Place)"          := lrecBin.Code;
+      lrecOpenTransOutb.MODIFY(TRUE);
+
+      cduWMSGenFunct.fctMovePalletOutbound(lrecOpenTransOutb);
+      cduWMSOutbFunct.fctPostTransaction(pcdeUserID,lrecOpenTransOutb,FALSE,pchrMsgType,ptxtErrorMessage,ptxtInfoMessage);
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETCURRENTKEY("Transport No.","Transaction Type");
+      lrecOpenTransOutb.SETRANGE("Transport No.",lcdeTransportNo);
+      lrecOpenTransOutb.SETFILTER("Transaction Type",'%1|%2',recWMSSetup."Trans. for Picking Full LP",
+        recWMSSetup."Trans. for Picking Open LP");
+      lrecOpenTransOutb.SETFILTER("Execution By User",'%1|%2','',pcdeUserID);
+      IF lrecOpenTransOutb.FINDFIRST THEN
+        pintMore := 1;
+    END;
+
+    PROCEDURE fctReleaseTransaction@1000000007(pcdeUserID@1000000004 : Code[20];pcodTerminal@1000000003 : Code[10];pintLineNo@1000000002 : Integer;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000005 : Record 2051539;
+      lrecOpenTransOutb1@1000000006 : Record 2051552;
+      lrecOpenTransOutb2@1000000008 : Record 2051552;
+      lrecTransportHeader@1000000007 : Record 2051575;
+    BEGIN
+      //WMS0.006 2010-03-30 SBOT
+      //PC5
+      //PARAMETERS
+      // pcodUser
+      // pcodTerminal
+      // pintLineNo
+      // pchrMsgType    [x]
+      // ptxtMessage    [x]
+      // RETURN-VALUE:  ()
+
+      recWMSSetup.GET;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      lrecOpenTransOutb1.LOCKTABLE;
+      IF NOT lrecOpenTransOutb1.GET(pintLineNo) THEN BEGIN
+        // transaction exists?
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,47,ptxtMessage);
+        EXIT;
+      END;
+
+      IF NOT fctGetTransportHeader(lrecOpenTransOutb1."Transport No.",lrecWMSUserSetupDetail,lrecTransportHeader,
+        pchrMsgType,ptxtMessage) THEN
+          EXIT;
+
+      IF lrecTransportHeader."Respect Loading Sequence" THEN BEGIN
+        lrecOpenTransOutb2.RESET;
+        lrecOpenTransOutb2.SETCURRENTKEY("Transport No.");
+        lrecOpenTransOutb2.SETRANGE("Transport No.",lrecTransportHeader."No.");
+        lrecOpenTransOutb2.SETRANGE("Execution By User",pcdeUserID);
+        lrecOpenTransOutb2.MODIFYALL("Execution By User",'',TRUE);
+      END;
+      //TEMP FIX!!!!! NA MODIF SCANNER PVPS MOET IF WEG!!!
+      IF lrecOpenTransOutb1."Pick Transaction" THEN BEGIN
+        lrecOpenTransOutb1."Label No."            := '';
+        lrecOpenTransOutb1."Executed By Terminal" := '';
+        lrecOpenTransOutb1."Executed By User"     := '';
+        lrecOpenTransOutb1.MODIFY;
+      END;
+
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+    END;
+
+    PROCEDURE fctCollect1@1000000010(pcdeUserID@1000000004 : Code[20];pcdeTerminal@1000000003 : Code[10];VAR pcdeLicensePlate@1000000002 : Code[20];VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecLicensePlate@1000000006 : Record 2051546;
+      lcduNoSeriesMgt@1000000005 : Codeunit 396;
+    BEGIN
+      //CL1
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      recWMSSetup.GET;
+
+      IF recWMSSetup."Collect License Plate Nos." = '' THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,85,ptxtMessage);
+        EXIT;
+      END;
+
+      lrecLicensePlate.RESET;
+      lrecLicensePlate.INIT;
+      lrecLicensePlate."License Plate" := lcduNoSeriesMgt.GetNextNo(recWMSSetup."Collect License Plate Nos.",WORKDATE,TRUE);
+      lrecLicensePlate.Type := lrecLicensePlate.Type::Collection;
+      lrecLicensePlate.INSERT(TRUE);
+
+      pcdeLicensePlate := lrecLicensePlate."License Plate";
+
+      //Add code to print label
+
+      pchrMsgType := 'W';
+      cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,90,ptxtMessage);
+      ptxtMessage := STRSUBSTNO(ptxtMessage,pcdeLicensePlate);
+
+      lrecLicensePlate.SETRANGE(lrecLicensePlate."License Plate",pcdeLicensePlate);
+      lrecLicensePlate.SETRANGE(lrecLicensePlate.Type,lrecLicensePlate.Type::Collection);
+      IF lrecLicensePlate.FINDFIRST THEN
+        REPORT.RUN(50050,FALSE,FALSE,lrecLicensePlate);
+    END;
+
+    PROCEDURE fctCollect2@1000000012(pcdeUserID@1000000004 : Code[20];pcdeTerminal@1000000003 : Code[10];pcdeLicensePlate@1000000002 : Code[20];VAR ptmpLicensePlate@1000000005 : TEMPORARY Record 2051546;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecLicensePlate@1000000006 : Record 2051546;
+      lrecOpenTransOutb@1000000007 : Record 2051552;
+      lrecPostedTransOutb@1000000009 : Record 2051553;
+      lcdeLastLP@1000000008 : Code[20];
+    BEGIN
+      //CL2
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      lrecLicensePlate.RESET;
+      lrecLicensePlate.SETRANGE("License Plate",pcdeLicensePlate);
+      lrecLicensePlate.SETRANGE(Type,lrecLicensePlate.Type::Collection);
+      IF lrecLicensePlate.ISEMPTY THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,86,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,pcdeLicensePlate);
+        EXIT;
+      END;
+
+      recWMSSetup.GET;
+
+      IF recWMSSetup."Transaction for Collect" = '' THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,91,ptxtMessage);
+        EXIT;
+      END;
+
+      lrecPostedTransOutb.RESET;
+      lrecPostedTransOutb.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+      lrecPostedTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+      lrecPostedTransOutb.SETRANGE("Collect License Plate",pcdeLicensePlate);
+      IF NOT lrecPostedTransOutb.ISEMPTY THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,101,ptxtMessage);
+        EXIT;
+      END;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+      lrecOpenTransOutb.SETFILTER("Transaction Type",'%1|%2',recWMSSetup."Transaction for Collect",
+        recWMSSetup."Transaction for Shipping");
+      lrecOpenTransOutb.SETRANGE("Collect License Plate",pcdeLicensePlate);
+      IF lrecOpenTransOutb.FINDSET THEN
+        REPEAT
+
+          IF lcdeLastLP <> lrecOpenTransOutb."License Plate" THEN BEGIN
+
+            lcdeLastLP := lrecOpenTransOutb."License Plate";
+
+            ptmpLicensePlate.INIT;
+            ptmpLicensePlate."License Plate" := lrecOpenTransOutb."License Plate";
+            ptmpLicensePlate.INSERT;
+
+          END;
+
+        UNTIL lrecOpenTransOutb.NEXT = 0;
+    END;
+
+    PROCEDURE fctCollect3@1000000014(pcdeUserID@1000000004 : Code[20];pcdeTerminal@1000000003 : Code[10];pcdeLicensePlate@1000000005 : Code[20];pcdeBox@1000000002 : Code[20];VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecLicensePlate@1000000006 : Record 2051546;
+      lrecOpenTransOutb@1000000007 : Record 2051552;
+      lrecOpenTransOutb2@1000000008 : Record 2051552;
+      lrecTransportHeader@1000000009 : Record 2051575;
+      lrecTransportHeader2@1000000010 : Record 2051575;
+      lblnCheck@1000000011 : Boolean;
+    BEGIN
+      //CL3
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      recWMSSetup.GET;
+
+      lrecLicensePlate.RESET;
+      lrecLicensePlate.SETRANGE("License Plate",pcdeBox);
+      lrecLicensePlate.SETFILTER(Type,'<>%1',lrecLicensePlate.Type::Collection);
+      IF NOT lrecLicensePlate.FINDFIRST THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,92,ptxtMessage);
+        EXIT;
+      END;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Collect");
+      lrecOpenTransOutb.SETRANGE("Collect License Plate",pcdeLicensePlate);
+      IF lrecOpenTransOutb.FINDFIRST THEN BEGIN
+        lrecTransportHeader.GET(lrecOpenTransOutb."Transport No.");
+        lblnCheck := TRUE;
+      END;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+      lrecOpenTransOutb.SETFILTER("Collect License Plate",'%1','');
+      lrecOpenTransOutb.SETRANGE("License Plate",pcdeBox);
+      IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+        lrecOpenTransOutb.SETFILTER("Collect License Plate",'<>%1','');
+        IF NOT lrecOpenTransOutb.ISEMPTY THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,99,ptxtMessage);
+          EXIT;
+        END ELSE BEGIN
+          lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Collect");
+          IF NOT lrecOpenTransOutb.ISEMPTY THEN BEGIN
+            pchrMsgType := 'E';
+            cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,99,ptxtMessage);
+            EXIT;
+          END ELSE BEGIN
+            pchrMsgType := 'E';
+            cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,93,ptxtMessage);
+            EXIT;
+          END;
+        END;
+      END;
+
+      lrecOpenTransOutb.FINDSET(TRUE,FALSE);
+      lrecTransportHeader2.GET(lrecOpenTransOutb."Transport No.");
+
+      IF lblnCheck THEN BEGIN
+        IF lrecTransportHeader."Shipping Agent Code" <> lrecTransportHeader2."Shipping Agent Code" THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,94,ptxtMessage);
+          EXIT;
+        END;
+
+        IF lrecTransportHeader."Loading Gate" <> lrecTransportHeader2."Loading Gate" THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,95,ptxtMessage);
+          EXIT;
+        END;
+      END;
+
+      REPEAT
+
+        lrecOpenTransOutb2 := lrecOpenTransOutb;
+        lrecOpenTransOutb2."Transaction Type"      := recWMSSetup."Transaction for Collect";
+        lrecOpenTransOutb2."Collect Transaction"   := TRUE;
+        lrecOpenTransOutb2."Collect License Plate" := pcdeLicensePlate;
+        lrecOpenTransOutb2."Executed By Terminal"  := pcdeTerminal;
+        lrecOpenTransOutb2."Time Executed"         := TIME;
+        lrecOpenTransOutb2."Date Executed"         := WORKDATE;
+        lrecOpenTransOutb2."Executed By User"      := pcdeUserID;
+        lrecOpenTransOutb2.MODIFY;
+
+      UNTIL lrecOpenTransOutb.NEXT = 0;
+    END;
+
+    PROCEDURE fctCollect4@1000000011(pcdeUserID@1000000004 : Code[20];pcdeTerminal@1000000003 : Code[10];pcdeLicensePlate@1000000002 : Code[20];VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecOpenTransOutb@1000000006 : Record 2051552;
+    BEGIN
+      //CL4
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      recWMSSetup.GET;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETCURRENTKEY("Transaction Type","Collect License Plate","License Plate");
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Collect");
+      lrecOpenTransOutb.SETRANGE("Collect License Plate",pcdeLicensePlate);
+      IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+
+        lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Shipping");
+        IF lrecOpenTransOutb.ISEMPTY THEN
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,96,ptxtMessage)
+        ELSE
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,100,ptxtMessage);
+
+        pchrMsgType := 'E';
+        EXIT;
+      END;
+
+      lrecOpenTransOutb.FINDSET(TRUE,FALSE);
+      REPEAT
+
+        cduWMSOutbFunct.fctPostTransaction(pcdeUserID,lrecOpenTransOutb,FALSE,pchrMsgType,ptxtMessage,ptxtMessage);
+
+      UNTIL lrecOpenTransOutb.NEXT = 0;
+    END;
+
+    PROCEDURE fctOrderpicking0@1000000016(pcdeUserID@1000000007 : Code[20];pcdeTerminal@1000000006 : Code[10];VAR ptmpLastTransportOrders@1000000001 : TEMPORARY Record 2051552;VAR pchrMsgType@1000000003 : Char;VAR ptxtMessage@1000000002 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000004 : Record 2051539;
+      lrecPostedTransOutb@1000000000 : Record 2051553;
+      lrecOpenTransOutb@1000000010 : Record 2051552;
+    BEGIN
+      //OP0
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      recWMSSetup.GET;
+
+      lrecPostedTransOutb.RESET;
+      lrecPostedTransOutb.SETRANGE("Date Executed",WORKDATE);
+      lrecPostedTransOutb.SETRANGE("Executed By User",lrecWMSUserSetupDetail."User ID");
+      lrecPostedTransOutb.SETRANGE("Pick Transaction",TRUE);
+      lrecPostedTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick LP");
+      IF lrecPostedTransOutb.FINDLAST THEN
+        REPEAT
+
+          ptmpLastTransportOrders.RESET;
+          ptmpLastTransportOrders.SETCURRENTKEY("Transport No.");
+          ptmpLastTransportOrders.SETRANGE("Transport No.",lrecPostedTransOutb."Transport No.");
+          IF ptmpLastTransportOrders.ISEMPTY THEN BEGIN
+
+            ptmpLastTransportOrders.RESET;
+            ptmpLastTransportOrders.INIT;
+            ptmpLastTransportOrders."Entry No." := ptmpLastTransportOrders.COUNT + 1;
+            ptmpLastTransportOrders."Transport No." := lrecPostedTransOutb."Transport No.";
+
+            lrecOpenTransOutb.RESET;
+            lrecOpenTransOutb.SETCURRENTKEY("Transport No.");
+            lrecOpenTransOutb.SETRANGE("Transport No.",lrecPostedTransOutb."Transport No.");
+            lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+
+            //Field Next Transaction is used to indicate if the transport order is finished
+            ptmpLastTransportOrders."Next Transaction" := lrecOpenTransOutb.ISEMPTY;
+
+            lrecOpenTransOutb.SETRANGE("Pick Transaction");
+            lrecOpenTransOutb.SETRANGE("Pick Transaction 2",TRUE);
+            ptmpLastTransportOrders."Next Transaction" := ptmpLastTransportOrders."Next Transaction" AND lrecOpenTransOutb.ISEMPTY;
+
+            ptmpLastTransportOrders.INSERT;
+
+          END;
+
+          ptmpLastTransportOrders.RESET;
+
+        UNTIL (lrecPostedTransOutb.NEXT(-1) = 0) OR (ptmpLastTransportOrders.COUNT = 5);
+    END;
+
+    PROCEDURE fctOrderpicking1@1000000058(pcdeUserID@1000000007 : Code[20];pcdeTerminal@1000000006 : Code[10];pcdeTransportNo@1000000001 : Code[20];pcdeBarcodeCart@1000000000 : Code[30];VAR precOpenTransOutb@1000000008 : Record 2051552;VAR pchrMsgType@1000000003 : Char;VAR ptxtMessage@1000000002 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000004 : Record 2051539;
+      lrecTransportHeader@1000000005 : Record 2051575;
+      lrecLicensePlate@1000000009 : Record 2051546;
+      lrecOpenTransOutb@1000000010 : Record 2051552;
+      lrecOpenTransOutb2@1000000016 : Record 2051552;
+      lrecTransportLine@1000000015 : Record 2051576;
+      lrecCustomer@1000000014 : Record 18;
+      lcduTransportMgt@1000000011 : Codeunit 2051555;
+      ltxtErrorMessage@1000000013 : Text[1024];
+      ltxtInfoMessage@1000000012 : Text[1024];
+    BEGIN
+      //OP1
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      IF NOT fctGetTransportHeader(pcdeTransportNo,lrecWMSUserSetupDetail,lrecTransportHeader,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      lrecTransportHeader.CALCFIELDS("WMS Status");
+      CASE lrecTransportHeader."WMS Status" OF
+        lrecTransportHeader."WMS Status"::" ":
+          BEGIN
+            pchrMsgType := 'E';
+            cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,67,ptxtMessage);
+            EXIT;
+          END;
+        lrecTransportHeader."WMS Status"::Picked:
+          BEGIN
+            //pchrMsgType := 'E';
+            //cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,68,ptxtMessage);
+            //EXIT;
+          END;
+        lrecTransportHeader."WMS Status"::Loaded,lrecTransportHeader."WMS Status"::Posted:
+          BEGIN
+            IF lrecTransportHeader."Location Loading" = lrecTransportHeader."Loading Gate" THEN BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,69,ptxtMessage);
+              EXIT;
+            END ELSE BEGIN
+              pchrMsgType := 'E';
+              cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,70,ptxtMessage);
+              EXIT;
+            END;
+          END
+      END;
+
+      //Check Cart
+      IF NOT lrecLicensePlate.GET(pcdeBarcodeCart) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,71,ptxtMessage);
+        EXIT;
+      END;
+
+      IF lrecLicensePlate."Transport No." <> lrecTransportHeader."No." THEN BEGIN
+        lrecLicensePlate.CALCFIELDS(Empty);
+        IF NOT lrecLicensePlate.Empty THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,81,ptxtMessage);
+          EXIT;
+        END ELSE BEGIN;
+          lrecLicensePlate."Transport No." := lrecTransportHeader."No.";
+          lrecLicensePlate.MODIFY;
+        END;
+      END;
+
+      lrecTransportLine.RESET;
+      lrecTransportLine.SETCURRENTKEY("No.","Grouping ID");
+      lrecTransportLine.SETRANGE("No.",lrecTransportHeader."No.");
+      IF lrecTransportLine.FINDFIRST THEN BEGIN
+        IF lrecCustomer.GET(lrecTransportLine."Sell-to Customer No.") THEN BEGIN
+          IF lrecCustomer.Blocked IN [lrecCustomer.Blocked::Ship,lrecCustomer.Blocked::All] THEN BEGIN
+            pchrMsgType := 'E';
+            cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,80,ptxtMessage);
+            EXIT;
+          END;
+        END;
+      END;
+
+      recWMSSetup.GET;
+
+      //Create transactions when "Start Picking" is scanner
+      IF recWMSSetup."Start Picking" = recWMSSetup."Start Picking"::Scanner THEN
+        lcduTransportMgt.fctStartPickingScanner(lrecTransportHeader,TRUE,ltxtErrorMessage,ltxtInfoMessage);
+
+      //Get the open transactions
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick LP");
+      lrecOpenTransOutb.SETRANGE("Transport No.",lrecTransportHeader."No.");
+      lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+      lrecOpenTransOutb.SETRANGE("Pick Transaction 2",FALSE);
+      lrecOpenTransOutb.SETRANGE("Replenishment Entry No.",0);
+      IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+
+        lrecOpenTransOutb2.RESET;
+        lrecOpenTransOutb2.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick SH");
+        lrecOpenTransOutb2.SETRANGE("Transport No.",lrecTransportHeader."No.");
+        lrecOpenTransOutb2.SETRANGE("License Plate",pcdeBarcodeCart);
+        lrecOpenTransOutb2.SETRANGE("Pick Transaction",TRUE);
+        lrecOpenTransOutb2.SETRANGE("Pick Transaction 2",TRUE);
+        IF lrecOpenTransOutb2.ISEMPTY THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,72,ptxtMessage);
+          EXIT;
+        END ELSE BEGIN
+          pchrMsgType := 'W';
+          cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,82,ptxtMessage);
+        END;
+
+      END;
+
+      lrecOpenTransOutb.SETCURRENTKEY("Bin (Take)","Lot No.");
+      precOpenTransOutb.COPY(lrecOpenTransOutb);
+    END;
+
+    PROCEDURE fctOrderpicking2@1000000059(pcdeUser@1000000005 : Code[20];pcdeTerminal@1000000004 : Code[10];pintTransactionLineNo@1000000001 : Integer;pcdeBinCode@1000000000 : Code[20];VAR ptmpBCD@1000000006 : TEMPORARY Record 2051586;VAR pchrMsgType@1000000003 : Char;VAR ptxtMessage@1000000002 : Text[1024]);
+    VAR
+      lrecBin@1000000012 : Record 7354;
+      lrecOpenTransOutb@1000000009 : Record 2051552;
+      lrecLotNoInfo@1000000010 : Record 6505;
+      lrecBCDFilter@1000000008 : Record 2051586;
+      ltmpBCD@1000000007 : TEMPORARY Record 2051586;
+    BEGIN
+      //OP2
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.GET(pintTransactionLineNo);
+
+      //Check if the scanned bin exists
+      IF NOT lrecBin.GET(lrecOpenTransOutb."Location (Take)",pcdeBinCode) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUser,objType::Codeunit,2051549,73,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,lrecOpenTransOutb."Location (Take)",pcdeBinCode);
+        EXIT;
+      END;
+
+      //Check if the scanned bins contains the proposed lot no.
+      lrecLotNoInfo.RESET;
+      lrecLotNoInfo.GET(lrecOpenTransOutb."Item No.",lrecOpenTransOutb."Variant Code",lrecOpenTransOutb."Lot No.");
+
+      lrecBCDFilter.RESET;
+      lrecBCDFilter.SETRANGE("Location Code",lrecBin."Location Code");
+      lrecBCDFilter.SETRANGE("Zone Code",lrecBin."Zone Code");
+      lrecBCDFilter.SETRANGE("Bin Code",lrecBin.Code);
+      lrecBCDFilter.SETRANGE("Item No.",lrecLotNoInfo."Item No.");
+      lrecBCDFilter.SETRANGE("Variant Code",lrecLotNoInfo."Variant Code");
+      lrecBCDFilter.SETRANGE("Lot No.",lrecLotNoInfo."Lot No.");
+      lrecBCDFilter.SETRANGE(Blocked,FALSE);
+
+      cduWMSGenFunct.fctConsultationDetails(ltmpBCD,lrecBCDFilter);
+
+      //Check if the scanned bin matches the transaction or is a valid bin (if bin changes, save the new bin on the transaction)
+      IF (lrecOpenTransOutb."Location (Take)" <> lrecBin."Location Code") OR (lrecOpenTransOutb."Bin (Take)" <> lrecBin.Code) THEN BEGIN
+        IF ltmpBCD.COUNT = 0 THEN BEGIN
+          pchrMsgType := 'E';
+          cduWMSGenFunct.fctGetMessage(pcdeUser,objType::Codeunit,2051549,74,ptxtMessage);
+          EXIT;
+        END ELSE BEGIN
+          lrecOpenTransOutb."Location (Take)" := lrecBin."Location Code";
+          lrecOpenTransOutb."Zone (Take)" := lrecBin."Zone Code";
+          lrecOpenTransOutb."Bin (Take)" := lrecBin.Code;
+          lrecOpenTransOutb.MODIFY;
+        END;
+      END;
+
+      //Get the different lots of the same item, on the same bin with the samen expiration date
+      lrecBCDFilter.SETRANGE("Lot No.");
+      lrecBCDFilter.SETRANGE("Expiration Date",lrecLotNoInfo."Expiration Date");
+
+      cduWMSGenFunct.fctConsultationDetails(ptmpBCD,lrecBCDFilter);
+    END;
+
+    PROCEDURE fctOrderpicking3@1000000008(pcdeUser@1000000004 : Code[20];pcdeTerminal@1000000003 : Code[10];VAR pcdeBarCode@1000000007 : Code[20];VAR pcdeUOM@1000000005 : Code[10];VAR pchrMsgType@1000000002 : Char;VAR ptxtErrorMessage@1000000001 : Text[1024];VAR ptxtInfoMessage@1000000010 : Text[1024]);
+    VAR
+      lrecOpenTransOutb@1000000015 : Record 2051552;
+      lrecLotNoInfo@1000000011 : Record 6505;
+      lrecBCDFilter@1000000012 : Record 2051586;
+      ltmpBCD@1000000013 : TEMPORARY Record 2051586;
+      lrecItem@1000000016 : Record 27;
+      lrecOpenTransInt@1000000019 : Record 2051583;
+      lcduUOMMgt@1000000017 : Codeunit 5402;
+      ldecQtyBase@1000000014 : Decimal;
+    BEGIN
+      //OP3
+      pchrMsgType := 'O';
+      ptxtErrorMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctBarCodeSearchScanner(pcdeUser,pcdeBarCode,pcdeUOM,2,pchrMsgType,ptxtErrorMessage) THEN
+        EXIT;
+    END;
+
+    PROCEDURE fctOrderpicking4@1000000060(pcdeUser@1000000004 : Code[20];pcdeTerminal@1000000003 : Code[10];pintTransactionLineNo@1000000000 : Integer;pcdeBarcodeCart@1000000008 : Code[30];pcdeLotNo@1000000007 : Code[20];pdecQty@1000000006 : Decimal;pcdeUOM@1000000005 : Code[10];VAR pblnTransportCompleted@1000000009 : Boolean;VAR pchrMsgType@1000000002 : Char;VAR ptxtErrorMessage@1000000001 : Text[1024];VAR ptxtInfoMessage@1000000010 : Text[1024]);
+    VAR
+      lrecOpenTransOutb@1000000015 : Record 2051552;
+      lrecLotNoInfo@1000000011 : Record 6505;
+      lrecBCDFilter@1000000012 : Record 2051586;
+      ltmpBCD@1000000013 : TEMPORARY Record 2051586;
+      lrecItem@1000000016 : Record 27;
+      lrecOpenTransInt@1000000019 : Record 2051583;
+      lcduUOMMgt@1000000017 : Codeunit 5402;
+      ldecQtyBase@1000000014 : Decimal;
+    BEGIN
+      //OP4
+      pchrMsgType := 'O';
+      ptxtErrorMessage := txcOK;
+
+      //Get the transaction and set the chosen lot, label and license plate
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.GET(pintTransactionLineNo);
+
+      //WMS 2012-02-22 FGOT BEGIN
+      //lrecLotNoInfo.RESET;
+      //lrecLotNoInfo.GET(lrecOpenTransOutb."Item No.",lrecOpenTransOutb."Variant Code",lrecOpenTransOutb."Lot No.");
+
+      IF NOT cduWMSScanGenFunct.fctBarCodeSearchScanner(pcdeUser,pcdeLotNo,pcdeUOM,2,pchrMsgType,ptxtErrorMessage) THEN
+        EXIT;
+
+      lrecLotNoInfo.RESET;
+      lrecLotNoInfo.GET(lrecOpenTransOutb."Item No.",lrecOpenTransOutb."Variant Code",pcdeLotNo);
+      //WMS 2012-02-22 FGOT END
+
+      lrecBCDFilter.RESET;
+      lrecBCDFilter.SETRANGE("Location Code",lrecOpenTransOutb."Location (Take)");
+      lrecBCDFilter.SETRANGE("Zone Code",lrecOpenTransOutb."Zone (Take)");
+      lrecBCDFilter.SETRANGE("Bin Code",lrecOpenTransOutb."Bin (Take)");
+      lrecBCDFilter.SETRANGE("Item No.",lrecOpenTransOutb."Item No.");
+      lrecBCDFilter.SETRANGE("Variant Code",lrecOpenTransOutb."Variant Code");
+      lrecBCDFilter.SETRANGE("Label No.",pcdeLotNo);
+      lrecBCDFilter.SETRANGE(Blocked,FALSE);
+      lrecBCDFilter.SETRANGE("Expiration Date",lrecLotNoInfo."Expiration Date");
+
+      cduWMSGenFunct.fctConsultationDetails(ltmpBCD,lrecBCDFilter);
+
+      IF NOT ltmpBCD.FINDFIRST THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUser,objType::Codeunit,2051549,75,txtError);
+        ptxtErrorMessage := STRSUBSTNO(txtError,pcdeLotNo);
+        EXIT;
+      END;
+
+      //Check quantity
+      IF pdecQty = 0 THEN
+        EXIT;
+
+      lrecItem.RESET;
+      lrecItem.GET(lrecOpenTransOutb."Item No.");
+
+      ldecQtyBase := pdecQty * lcduUOMMgt.GetQtyPerUnitOfMeasure(lrecItem,pcdeUOM);
+
+      IF ldecQtyBase > lrecOpenTransOutb."Quantity (Base)" THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUser,objType::Codeunit,2051549,76,txtError);
+        ptxtErrorMessage := STRSUBSTNO(txtError,lrecOpenTransOutb."Quantity (Base)",ldecQtyBase,lrecOpenTransOutb."Base Unit of Measure"
+      );
+        EXIT;
+      END;
+
+      //Set the chosen quantities, lot, label and license plate on the transaction
+      lrecOpenTransOutb.Quantity := pdecQty;
+      lrecOpenTransOutb."Unit of Measure Code" := pcdeUOM;
+      lrecOpenTransOutb."Quantity (Base)" := ldecQtyBase;
+      lrecOpenTransOutb."Qty. per Unit of Measure" := lcduUOMMgt.GetQtyPerUnitOfMeasure(lrecItem,pcdeUOM);
+      lrecOpenTransOutb."Lot No." := ltmpBCD."Lot No.";
+      lrecOpenTransOutb."Label No." := ltmpBCD."Label No.";
+      lrecOpenTransOutb."License Plate" := pcdeBarcodeCart;
+      lrecOpenTransOutb."Executed By User" := pcdeUser;
+      lrecOpenTransOutb."Executed By Terminal" := pcdeTerminal;
+      lrecOpenTransOutb."Date Executed" := WORKDATE;
+      lrecOpenTransOutb."Time Executed" := TIME;
+      lrecOpenTransOutb.MODIFY;
+
+      //Create a temporary open transaction internal for making the transfer
+      lrecOpenTransInt.RESET;
+      lrecOpenTransInt.INIT;
+      lrecOpenTransInt."Creation Date"          := WORKDATE;
+      lrecOpenTransInt."Creation Time"          := TIME;
+      lrecOpenTransInt."Item No."               := lrecOpenTransOutb."Item No.";
+      lrecOpenTransInt."Variant Code"           := lrecOpenTransOutb."Variant Code";
+      lrecOpenTransInt."Lot No."                := lrecOpenTransOutb."Lot No.";
+      lrecOpenTransInt.Quantity                 := lrecOpenTransOutb.Quantity;
+      lrecOpenTransInt."Unit of Measure Code"   := lrecOpenTransOutb."Unit of Measure Code";
+      lrecOpenTransInt."Quantity (Base)"        := lrecOpenTransOutb."Quantity (Base)";
+      lrecOpenTransInt."Base Unit of Measure"   := lrecOpenTransOutb."Base Unit of Measure";
+      lrecOpenTransInt."Label No."              := lrecOpenTransOutb."Label No.";
+      lrecOpenTransInt."Label No. (New)"        := lrecOpenTransOutb."Label No.";
+      lrecOpenTransInt."License Plate"          := '';
+      lrecOpenTransInt."License Plate (New)"    := lrecOpenTransOutb."License Plate";
+      lrecOpenTransInt."Location (Take)"        := lrecOpenTransOutb."Location (Take)";
+      lrecOpenTransInt."Zone (Take)"            := lrecOpenTransOutb."Zone (Take)";
+      lrecOpenTransInt."Bin (Take)"             := lrecOpenTransOutb."Bin (Take)";
+      lrecOpenTransInt."Location (Place)"       := lrecOpenTransOutb."Location (Place)";
+      lrecOpenTransInt."Zone (Place)"           := lrecOpenTransOutb."Zone (Place)";
+      lrecOpenTransInt."Bin (Place)"            := lrecOpenTransOutb."Bin (Place)";
+      lrecOpenTransInt."Created By User"        := pcdeUser;
+      lrecOpenTransInt."Created By Terminal"    := pcdeTerminal;
+      lrecOpenTransInt."Executed By User"       := pcdeUser;
+      lrecOpenTransInt."Executed By Terminal"   := pcdeTerminal;
+
+      //Transfer the order pick to the cart
+      cduWMSGenFunct.fctMovePalletInternal(lrecOpenTransInt);
+
+      //Create posted transaction and next transaction
+      cduWMSOutbFunct.fctPostTransaction(pcdeUser,lrecOpenTransOutb,TRUE,pchrMsgType,ptxtErrorMessage,ptxtInfoMessage);
+      IF pchrMsgType = 'E' THEN
+        EXIT;
+
+      //Check if the transport is completed
+      recWMSSetup.GET;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick LP");
+      lrecOpenTransOutb.SETRANGE("Transport No.",lrecOpenTransOutb."Transport No.");
+      lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+      lrecOpenTransOutb.SETRANGE("Replenishment Entry No.",0);
+      pblnTransportCompleted := lrecOpenTransOutb.ISEMPTY;
+    END;
+
+    PROCEDURE fctOrderpicking5@1000000062(pcdeUserID@1000000005 : Code[20];pcdeTerminal@1000000004 : Code[10];pcdeTransportNo@1000000001 : Code[20];pcdeBarcodeCart@1000000000 : Code[30];VAR precOpenTransOutb@1000000008 : TEMPORARY Record 2051552;VAR pchrMsgType@1000000003 : Char;VAR ptxtMessage@1000000002 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000007 : Record 2051539;
+      lrecTransportHeader@1000000011 : Record 2051575;
+      lrecOpenTransOutb@1000000006 : Record 2051552;
+    BEGIN
+      //OP5
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      IF NOT fctGetTransportHeader(pcdeTransportNo,lrecWMSUserSetupDetail,lrecTransportHeader,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      recWMSSetup.GET;
+
+      //Get the open transactions that are ready to go from the order picking bin to the shipping bin
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick SH");
+      lrecOpenTransOutb.SETRANGE("Transport No.",lrecTransportHeader."No.");
+      lrecOpenTransOutb.SETRANGE("License Plate",pcdeBarcodeCart);
+      lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+      IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,77,ptxtMessage);
+        EXIT;
+      END;
+
+      precOpenTransOutb.SETCURRENTKEY("Bin (Take)","Lot No.");
+      precOpenTransOutb.COPY(lrecOpenTransOutb);
+    END;
+
+    PROCEDURE fctOrderpicking6@1000000065(pcdeUserID@1000000005 : Code[20];pcdeTerminal@1000000004 : Code[10];pcdeTransportNo@1000000001 : Code[20];pcdeBarcodeCart@1000000000 : Code[30];pcdeBinCode@1000000006 : Code[20];pdecWeight@1000000012 : Decimal;VAR pchrMsgType@1000000003 : Char;VAR ptxtErrorMessage@1000000007 : Text[1024];VAR ptxtInfoMessage@1000000002 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000011 : Record 2051539;
+      lrecTransportHeader@1000000009 : Record 2051575;
+      lrecItem@1000000019 : Record 27;
+      lrecOpenTransInt@1000000020 : Record 2051583;
+      lrecOpenTransOutb@1000000021 : Record 2051552;
+      lrecLicensePlate@1000000008 : Record 2051546;
+      lcdeLicensePlate@1000000010 : Code[20];
+    BEGIN
+      //OP6
+      pchrMsgType := 'O';
+      ptxtErrorMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtErrorMessage) THEN
+        EXIT;
+
+      IF NOT fctGetTransportHeader(pcdeTransportNo,lrecWMSUserSetupDetail,lrecTransportHeader,pchrMsgType,ptxtErrorMessage) THEN
+        EXIT;
+
+      IF pcdeBinCode <> lrecTransportHeader."Location Loading" THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,78,ptxtErrorMessage);
+        EXIT;
+      END;
+
+      recWMSSetup.GET;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick SH");
+      lrecOpenTransOutb.SETRANGE("Transport No.",lrecTransportHeader."No.");
+      lrecOpenTransOutb.SETRANGE("License Plate",pcdeBarcodeCart);
+      lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+      IF lrecOpenTransOutb.FINDSET THEN BEGIN
+
+        lrecLicensePlate.RESET;
+        lrecLicensePlate.GET(pcdeBarcodeCart);
+        IF lrecLicensePlate.Type = lrecLicensePlate.Type::Cart THEN BEGIN
+
+          lrecLicensePlate.RESET;
+          lrecLicensePlate.SETFILTER("License Plate",STRSUBSTNO('%1*',lrecTransportHeader."No."));
+          IF lrecLicensePlate.FINDLAST THEN
+            lcdeLicensePlate := INCSTR(lrecLicensePlate."License Plate")
+          ELSE
+            lcdeLicensePlate := STRSUBSTNO('%1/01',lrecTransportHeader."No.");
+
+          lrecLicensePlate.RESET;
+          lrecLicensePlate.INIT;
+          lrecLicensePlate."License Plate" := lcdeLicensePlate;
+          lrecLicensePlate.Type := lrecLicensePlate.Type::Box;
+          lrecLicensePlate.INSERT(TRUE);
+
+          pchrMsgType := 'W';
+
+          CASE lrecLicensePlate.Type OF
+            lrecLicensePlate.Type::Box: cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,83,txtError);
+            lrecLicensePlate.Type::Pallet: cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,84,txtError);
+          END;
+
+          ptxtErrorMessage := STRSUBSTNO(txtError,lrecLicensePlate."License Plate");
+          lrecLicensePlate.SETRANGE(lrecLicensePlate."License Plate",lcdeLicensePlate);
+          lrecLicensePlate.SETRANGE(lrecLicensePlate.Type,lrecLicensePlate.Type::Box);
+          IF lrecLicensePlate.FINDFIRST THEN
+            REPORT.RUN(50050,FALSE,FALSE,lrecLicensePlate);
+
+        END;
+
+        //print shipmentlabel here
+
+        REPEAT
+
+          lrecItem.RESET;
+          lrecItem.GET(lrecOpenTransOutb."Item No.");
+
+          lrecOpenTransInt.RESET;
+          lrecOpenTransInt.INIT;
+          lrecOpenTransInt."Creation Date"          := WORKDATE;
+          lrecOpenTransInt."Creation Time"          := TIME;
+          lrecOpenTransInt."Item No."               := lrecOpenTransOutb."Item No.";
+          lrecOpenTransInt."Variant Code"           := lrecOpenTransOutb."Variant Code";
+          lrecOpenTransInt."Lot No."                := lrecOpenTransOutb."Lot No.";
+          lrecOpenTransInt."Lot No. (New)"          := lrecOpenTransOutb."Lot No.";
+          lrecOpenTransInt.Quantity                 := lrecOpenTransOutb.Quantity;
+          lrecOpenTransInt."Unit of Measure Code"   := lrecOpenTransOutb."Unit of Measure Code";
+          lrecOpenTransInt."Quantity (Base)"        := lrecOpenTransOutb."Quantity (Base)";
+          lrecOpenTransInt."Base Unit of Measure"   := lrecItem."Base Unit of Measure";
+          lrecOpenTransInt."Label No."              := lrecOpenTransOutb."Label No.";
+          lrecOpenTransInt."Label No. (New)"        := lrecOpenTransOutb."Label No.";
+          lrecOpenTransInt."License Plate"          := lrecOpenTransOutb."License Plate";
+
+          lrecOpenTransOutb."License Plate"         := lrecLicensePlate."License Plate";
+          lrecOpenTransOutb."Executed By Terminal"  := pcdeTerminal;
+          lrecOpenTransOutb."Time Executed"         := TIME;
+          lrecOpenTransOutb."Date Executed"         := WORKDATE;
+          lrecOpenTransOutb."Executed By User"      := pcdeUserID;
+          lrecOpenTransOutb."License Plate Weight"  := pdecWeight;
+          lrecOpenTransOutb.MODIFY;
+
+          lrecOpenTransInt."License Plate (New)"    := lrecOpenTransOutb."License Plate";
+          lrecOpenTransInt."Location (Take)"        := lrecOpenTransOutb."Location (Take)";
+          lrecOpenTransInt."Zone (Take)"            := lrecOpenTransOutb."Zone (Take)";
+          lrecOpenTransInt."Bin (Take)"             := lrecOpenTransOutb."Bin (Take)";
+          lrecOpenTransInt."Location (Place)"       := lrecOpenTransOutb."Location (Place)";
+          lrecOpenTransInt."Bin (Place)"            := lrecOpenTransOutb."Bin (Place)";
+          lrecOpenTransInt."Zone (Place)"           := lrecOpenTransOutb."Zone (Place)";
+          lrecOpenTransInt."Created By User"        := pcdeUserID;
+          lrecOpenTransInt."Created By Terminal"    := pcdeTerminal;
+          lrecOpenTransInt."Executed By User"       := pcdeUserID;
+          lrecOpenTransInt."Executed By Terminal"   := pcdeTerminal;
+          lrecOpenTransInt.Movement                 := lrecOpenTransInt.Movement::Outbound;
+
+          cduWMSGenFunct.fctMovePalletInternal(lrecOpenTransInt);
+
+          //Create posted transaction and next transaction
+          cduWMSOutbFunct.fctPostTransaction(pcdeUserID,lrecOpenTransOutb,TRUE,pchrMsgType,ptxtErrorMessage,ptxtInfoMessage);
+          IF pchrMsgType = 'E' THEN
+            EXIT;
+
+        UNTIL lrecOpenTransOutb.NEXT = 0;
+      END;
+
+      lrecLicensePlate.RESET;
+      lrecLicensePlate.GET(pcdeBarcodeCart);
+      lrecLicensePlate."Transport No." := '';
+      lrecLicensePlate.MODIFY;
+    END;
+
+    PROCEDURE fctOrderpicking7@1000000015(pcdeUserID@1000000006 : Code[20];pcdeTerminal@1000000005 : Code[10];pcdeBarcodeCart@1000000003 : Code[30];VAR precOpenTransOutb@1000000002 : TEMPORARY Record 2051552;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000008 : Record 2051539;
+      lrecOpenTransOutb@1000000004 : Record 2051552;
+    BEGIN
+      //OP7
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+
+      recWMSSetup.GET;
+
+      //Get the open transactions that are ready to go from the order picking bin to the shipping bin
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick SH");
+      lrecOpenTransOutb.SETRANGE("License Plate",pcdeBarcodeCart);
+      lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+      IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,77,ptxtMessage);
+        EXIT;
+      END;
+
+      precOpenTransOutb.SETCURRENTKEY("Bin (Take)","Lot No.");
+      precOpenTransOutb.COPY(lrecOpenTransOutb);
+    END;
+
+    PROCEDURE fctOrderpicking8@1000000017(pcdeUserID@1000000005 : Code[20];pcdeTerminal@1000000004 : Code[10];pcdeBarcodeCart@1000000003 : Code[30];pcdeBarcodeEAN@1000000006 : Code[30];VAR pcdeUOM@1000000008 : Code[10];VAR precOpenTransOutb@1000000002 : TEMPORARY Record 2051552;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecOpenTransOutb@1000000007 : Record 2051552;
+    BEGIN
+      //OP8
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      recWMSSetup.GET;
+
+      IF NOT cduWMSScanGenFunct.fctBarCodeSearchScanner(pcdeUserID,pcdeBarcodeEAN,pcdeUOM,2,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      lrecOpenTransOutb.RESET;
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick SH");
+      lrecOpenTransOutb.SETRANGE("License Plate",pcdeBarcodeCart);
+      lrecOpenTransOutb.SETRANGE("Label No.",pcdeBarcodeEAN);
+      lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+      IF NOT lrecOpenTransOutb.FINDFIRST THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(pcdeUserID,objType::Codeunit,2051549,50002,ptxtMessage);
+        EXIT;
+      END;
+
+      precOpenTransOutb.COPY(lrecOpenTransOutb);
+    END;
+
+    PROCEDURE fctOrderpicking9@1000000018(pcdeUserID@1000000007 : Code[20];pcdeTerminal@1000000006 : Code[10];pcdeFromBarcodeCart@1000000005 : Code[30];pcdeToBarodeCartonBin@1000000009 : Code[30];pcdeBarcodeEAN@1000000004 : Code[30];pdecQty@1000000010 : Decimal;pcdeUOM@1000000003 : Code[10];VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecOpenTransOutb@1000000008 : Record 2051552;
+      lrecPostedTransOutb@1000000015 : Record 2051553;
+      lrecBin@1000000012 : Record 7354;
+      lrecBinFrom@1000000014 : Record 7354;
+      lrecLP@1000000013 : Record 2051546;
+      lrecTransportHeader@1000000011 : Record 2051575;
+      loptError@1000000016 : ' ,Critical,TypeZone,Capacity,Blocked,BinType,WarehouseClass';
+    BEGIN
+      //OP9
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctBarCodeSearchScanner(pcdeUserID,pcdeBarcodeEAN,pcdeUOM,2,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      lrecOpenTransOutb.SETRANGE("License Plate",pcdeFromBarcodeCart);
+      lrecOpenTransOutb.SETRANGE("Lot No.",pcdeBarcodeEAN);
+      IF NOT lrecOpenTransOutb.FINDFIRST THEN
+        EXIT;
+
+      IF lrecBin.GET(lrecOpenTransOutb."Location (Take)",pcdeToBarodeCartonBin) THEN BEGIN
+          //Check bin capacity
+          cduWMSGenFunct.fctCheckBinCapacity(lrecOpenTransOutb."Label No.",
+                                             lrecOpenTransOutb."License Plate",
+                                             lrecOpenTransOutb."Item No.",
+                                             lrecOpenTransOutb."Lot No.",
+                                             lrecOpenTransOutb."Location (Take)",
+                                             lrecOpenTransOutb."Zone (Take)",
+                                             pcdeToBarodeCartonBin,
+                                             'OP',
+                                             blnBinType,
+                                             loptError);
+           IF (loptError <> loptError::" ") THEN BEGIN
+             pchrMsgType := 'E';
+             cduWMSGenFunct.fctTranslateCBCMessage(pcdeUserID,2051549,50003,loptError,lrecBin.Code,lrecBin."Zone Code",ptxtMessage);
+             EXIT;
+           END;
+
+          //Move to new bin
+          lrecBinFrom.GET(lrecOpenTransOutb."Location (Take)",lrecOpenTransOutb."Bin (Take)");
+          cduWMSGenFunct.fctCreateOpenInternalAndMove(pcdeUserID,
+                                                      pcdeTerminal,
+                                                      lrecBinFrom,
+                                                      lrecBin,
+                                                      lrecOpenTransOutb."Item No.",
+                                                      lrecOpenTransOutb."Variant Code",
+                                                      lrecOpenTransOutb."Lot No.",
+                                                      lrecOpenTransOutb."Label No.",
+                                                      pcdeFromBarcodeCart,
+                                                      pdecQty,
+                                                      pcdeUOM,
+                                                      '',
+                                                      lrecOpenTransOutb."Label No.",
+                                                      (pdecQty * lrecOpenTransOutb."Qty. per Unit of Measure"),
+                                                      lrecOpenTransOutb."Base Unit of Measure");
+
+
+          //Delete Posted transaction OP1
+          lrecPostedTransOutb.SETRANGE("Transaction Type",'OP');
+          lrecPostedTransOutb.SETRANGE("Transport No.",lrecOpenTransOutb."Transport No.");
+          lrecPostedTransOutb.SETRANGE("Transport Line No.",lrecOpenTransOutb."Transport Line No.");
+          lrecPostedTransOutb.SETRANGE("Item No.",lrecOpenTransOutb."Item No.");
+          lrecPostedTransOutb.SETRANGE("Quantity (Base)",lrecOpenTransOutb."Quantity (Base)");
+          IF lrecPostedTransOutb.FINDFIRST THEN
+            lrecPostedTransOutb.DELETE;
+
+          //Delete open transaction OP2
+          lrecOpenTransOutb.DELETE;
+
+          //Recreate open transaction OP
+          lrecTransportHeader.GET(lrecOpenTransOutb."Transport No.");
+          cduWMSOutbFunct.fctCreateTransShippings(lrecTransportHeader,
+                                                  pcdeUserID,
+                                                  pcdeTerminal,
+                                                  TRUE,
+                                                  ptxtMessage,
+                                                  ptxtMessage);
+
+
+
+      END ELSE BEGIN
+        IF lrecLP.GET(pcdeToBarodeCartonBin) THEN BEGIN
+          IF lrecLP."Transport No." = '' THEN BEGIN
+            lrecLP."Transport No." := lrecOpenTransOutb."Transport No.";
+            lrecLP.MODIFY;
+          END ELSE
+            IF lrecLP."Transport No." <> lrecOpenTransOutb."Transport No." THEN BEGIN
+              pchrMsgType := 'E';
+              ptxtMessage := 'LP pour un autre transport';// change to Scan message
+              EXIT;
+            END;
+
+          lrecBin.GET(lrecOpenTransOutb."Location (Take)",lrecOpenTransOutb."Bin (Take)");
+          cduWMSGenFunct.fctCreateOpenInternalAndMove(pcdeUserID,
+                                                      pcdeTerminal,
+                                                      lrecBin,
+                                                      lrecBin,
+                                                      lrecOpenTransOutb."Item No.",
+                                                      lrecOpenTransOutb."Variant Code",
+                                                      lrecOpenTransOutb."Lot No.",
+                                                      lrecOpenTransOutb."Label No.",
+                                                      pcdeFromBarcodeCart,
+                                                      pdecQty,
+                                                      pcdeUOM,
+                                                      pcdeToBarodeCartonBin,
+                                                      lrecOpenTransOutb."Label No.",
+                                                      (pdecQty * lrecOpenTransOutb."Qty. per Unit of Measure"),
+                                                      lrecOpenTransOutb."Base Unit of Measure");
+
+           lrecOpenTransOutb."License Plate" := pcdeToBarodeCartonBin;
+           lrecOpenTransOutb.MODIFY;
+        END ELSE BEGIN
+          pchrMsgType := 'E';
+          ptxtMessage := 'Emplacement ou LP non trouv‚';// change to Scan message
+          EXIT;
+        END;
+      END;
+
+      CLEAR(lrecOpenTransOutb);
+      recWMSSetup.GET;
+      lrecOpenTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick SH");
+      lrecOpenTransOutb.SETRANGE("License Plate",pcdeFromBarcodeCart);
+      lrecOpenTransOutb.SETRANGE("Pick Transaction",TRUE);
+      IF lrecOpenTransOutb.ISEMPTY THEN BEGIN
+        lrecPostedTransOutb.SETRANGE("Transaction Type",recWMSSetup."Transaction for Order Pick SH");
+        lrecPostedTransOutb.SETRANGE("License Plate",pcdeFromBarcodeCart);
+        lrecPostedTransOutb.SETRANGE("Pick Transaction",TRUE);
+        IF lrecPostedTransOutb.ISEMPTY THEN BEGIN
+          IF lrecLP.GET(pcdeFromBarcodeCart) THEN BEGIN
+            lrecLP."Transport No." := '';
+            lrecLP.MODIFY;
+          END;
+        END;
+      END;
+    END;
+
+    PROCEDURE fctGetTransportHeader@1000000009(pcdeTransportNo@1000000003 : Code[20];precWMSUserSetupDetail@1000000004 : Record 2051539;VAR precTransportHeader@1000000002 : Record 2051575;VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]) : Boolean;
+    BEGIN
+      //PARAMETERS
+      // pcdeTransportNo
+      // pcdeUserID
+      // precTransportHeader [x]
+      // pchrMsgType         [x]
+      // ptxtMessage         [x]
+
+      precTransportHeader.RESET;
+      IF NOT precTransportHeader.GET(pcdeTransportNo) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(precWMSUserSetupDetail."User ID",objType::Codeunit,2051549,2,ptxtMessage);
+        EXIT(FALSE);
+      END;
+
+      IF NOT (precTransportHeader."Execution By User" IN [precWMSUserSetupDetail."User ID",'']) THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(precWMSUserSetupDetail."User ID",objType::Codeunit,2051549,57,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,precTransportHeader."Execution By User");
+        EXIT(FALSE);
+      END;
+
+      IF precWMSUserSetupDetail.Location <> precTransportHeader."Location Code" THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(precWMSUserSetupDetail."User ID",objType::Codeunit,2051549,24,txtError);
+        ptxtMessage := STRSUBSTNO(txtError,precWMSUserSetupDetail.Location,precTransportHeader."Location Code");
+        EXIT(FALSE);
+      END;
+
+      EXIT(TRUE);
+    END;
+
+    PROCEDURE fctLinkShippingAgentBarcode@1000000013(pcdeUserID@1000000007 : Code[20];pcdeTerminal@1000000004 : Code[10];pcdeBarcode1@1000000006 : Code[30];pcdeBarcode2@1000000005 : Code[30];VAR pchrMsgType@1000000001 : Char;VAR ptxtMessage@1000000000 : Text[1024]);
+    VAR
+      lrecWMSUserSetupDetail@1000000008 : Record 2051539;
+      lrecShippingAgentBarcodeLink@1000000009 : Record 50005;
+      lrecLabel@1000000003 : Record 2051545;
+      lrecLicensePlate@1000000002 : Record 2051546;
+      lrecOpenTransOutb@1000000012 : Record 2051552;
+      lblnFound1@1000000010 : Boolean;
+      lblnFound2@1000000011 : Boolean;
+    BEGIN
+      //LN1
+      // pcdeUserID
+      // pcdeTerminal
+      // pcdeBarcode1
+      // pcdeBarcode2
+      // pchrMsgType         [x]
+      // ptxtMessage         [x]
+
+      pchrMsgType := 'O';
+      ptxtMessage := txcOK;
+
+      IF NOT cduWMSScanGenFunct.fctCheckWMSUserDetail(pcdeUserID,lrecWMSUserSetupDetail,pchrMsgType,ptxtMessage) THEN
+        EXIT;
+
+      lrecShippingAgentBarcodeLink.RESET;
+      lrecShippingAgentBarcodeLink.INIT;
+
+      lrecLabel.RESET;
+      lrecLicensePlate.RESET;
+
+      IF lrecLabel.GET(pcdeBarcode1) THEN BEGIN
+        lrecShippingAgentBarcodeLink."Internal Barcode Type" := lrecShippingAgentBarcodeLink."Internal Barcode Type"::Label;
+        lrecShippingAgentBarcodeLink."Internal Barcode" := pcdeBarcode1;
+        lblnFound1 := TRUE;
+      END ELSE IF lrecLicensePlate.GET(pcdeBarcode1) THEN BEGIN
+        lrecShippingAgentBarcodeLink."Internal Barcode Type" := lrecShippingAgentBarcodeLink."Internal Barcode Type"::"License Plate";
+        lrecShippingAgentBarcodeLink."Internal Barcode" := pcdeBarcode1;
+        lblnFound1 := TRUE;
+      END;
+
+      IF lrecLabel.GET(pcdeBarcode2) THEN BEGIN
+        lrecShippingAgentBarcodeLink."Internal Barcode Type" := lrecShippingAgentBarcodeLink."Internal Barcode Type"::Label;
+        lrecShippingAgentBarcodeLink."Internal Barcode" := pcdeBarcode2;
+        lblnFound2 := TRUE;
+      END ELSE IF lrecLicensePlate.GET(pcdeBarcode2) THEN BEGIN
+        lrecShippingAgentBarcodeLink."Internal Barcode Type" := lrecShippingAgentBarcodeLink."Internal Barcode Type"::"License Plate";
+        lrecShippingAgentBarcodeLink."Internal Barcode" := pcdeBarcode2;
+        lblnFound2 := TRUE;
+      END;
+
+      IF lblnFound1 AND lblnFound2 THEN BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(lrecWMSUserSetupDetail."User ID",objType::Codeunit,2051549,50000,ptxtMessage);
+        EXIT;
+      END;
+
+      IF lblnFound1 OR lblnFound2 THEN BEGIN
+
+        IF lblnFound1 THEN
+          lrecShippingAgentBarcodeLink."Shipping Agent Barcode" := pcdeBarcode2;
+
+        IF lblnFound2 THEN
+          lrecShippingAgentBarcodeLink."Shipping Agent Barcode" := pcdeBarcode1;
+
+        lrecShippingAgentBarcodeLink.INSERT(TRUE)
+
+      END ELSE BEGIN
+        pchrMsgType := 'E';
+        cduWMSGenFunct.fctGetMessage(lrecWMSUserSetupDetail."User ID",objType::Codeunit,2051549,50001,ptxtMessage);
+        EXIT;
+      END;
+    END;
+
+    BEGIN
+    {
+      Sphinx-IT
+      ----------
+      Project Distec
+      ---------------
+      DISTEC   2012-02-22   FGOT   Added function "fctLinkShippingAgentBarcode"
+      DISTEC   2012-04-24   FGAS   Added function "fctOrderpicking7","fctOrderpicking8","fctOrderpicking9"
+      Project SphinxWMS
+      ------------------
+      WMS0.015    2011-07-12   FGOT   Added function "fctOrderpicking0"
+      WMS0.015    2011-06-01   FGOT   Added functions "fctOrderpicking1" > "fctOrderpicking5"
+      WMS         2011-02-24   FGOT   Changed code in function "fctCheckStatusTP"
+      WMS         2011-02-23   FGOT   Changed code in function "fctCheckLabelPick"
+      WMS         2011-02-21   FGOT   Added code in functions "fctCheckScannedLine"
+                                                              "fctCheckPickTo"
+      WMS         2011-02-17   FGOT   Changed code in function "fctCheckLabelQty"
+      WMS0.006    2011-02-10   FGOT   Modify function fctOverviewTPLines
+      WMS0.007    2010-04-02   SBOT   Modify fctCheckPickTo to enable sequence transactions
+      WMS0.006    2010-03-29   SBOT   Modify function fctOverviewTPLines
+                                      Add fucntion fctCheckLabelPick
+                                      Add function fctCheckLabelQty
+      WMS00.005   VVAE   21/01/2010   License plate to op outbound bestaat niet meer
+    }
+    END.
+  }
+}
+
