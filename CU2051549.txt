@@ -2,8 +2,8 @@ OBJECT Codeunit 2051549 WMS Scan Outbound Functions
 {
   OBJECT-PROPERTIES
   {
-    Date=26/04/12;
-    Time=18:05:23;
+    Date=23/05/12;
+    Time=16:19:14;
     Modified=Yes;
     Version List=SPHINXwms3,Distec;
   }
@@ -2245,6 +2245,8 @@ OBJECT Codeunit 2051549 WMS Scan Outbound Functions
       lrecLP@1000000013 : Record 2051546;
       lrecTransportHeader@1000000011 : Record 2051575;
       loptError@1000000016 : ' ,Critical,TypeZone,Capacity,Blocked,BinType,WarehouseClass';
+      lrecItem@1000000017 : Record 27;
+      lcduUOMMgt@1000000002 : Codeunit 5402;
     BEGIN
       //OP9
       pchrMsgType := 'O';
@@ -2260,7 +2262,22 @@ OBJECT Codeunit 2051549 WMS Scan Outbound Functions
 
       IF lrecBin.GET(lrecOpenTransOutb."Location (Take)",pcdeToBarodeCartonBin) THEN BEGIN
           //Check bin capacity
-          cduWMSGenFunct.fctCheckBinCapacity(lrecOpenTransOutb."Label No.",
+          //DISTEC 2012-03-25 FGOT BEGIN
+          //cduWMSGenFunct.fctCheckBinCapacity(lrecOpenTransOutb."Label No.",
+          //                                   lrecOpenTransOutb."License Plate",
+          //                                   lrecOpenTransOutb."Item No.",
+          //                                   lrecOpenTransOutb."Lot No.",
+          //                                   lrecOpenTransOutb."Location (Take)",
+          //                                   lrecOpenTransOutb."Zone (Take)",
+          //                                   pcdeToBarodeCartonBin,
+          //                                   'OP',
+          //                                   blnBinType,
+          //                                   loptError);
+
+
+          lrecItem.GET(lrecOpenTransOutb."Item No.");
+
+          cduWMSGenFunct.fctCheckBinCapacityWithQtyBase(lrecOpenTransOutb."Label No.",
                                              lrecOpenTransOutb."License Plate",
                                              lrecOpenTransOutb."Item No.",
                                              lrecOpenTransOutb."Lot No.",
@@ -2269,12 +2286,15 @@ OBJECT Codeunit 2051549 WMS Scan Outbound Functions
                                              pcdeToBarodeCartonBin,
                                              'OP',
                                              blnBinType,
+                                             lcduUOMMgt.GetQtyPerUnitOfMeasure(lrecItem,pcdeUOM) * pdecQty,
                                              loptError);
-           IF (loptError <> loptError::" ") THEN BEGIN
-             pchrMsgType := 'E';
-             cduWMSGenFunct.fctTranslateCBCMessage(pcdeUserID,2051549,50003,loptError,lrecBin.Code,lrecBin."Zone Code",ptxtMessage);
-             EXIT;
-           END;
+          //DISTEC 2012-03-25 FGOT END
+
+          IF (loptError <> loptError::" ") THEN BEGIN
+            pchrMsgType := 'E';
+            cduWMSGenFunct.fctTranslateCBCMessage(pcdeUserID,2051549,50003,loptError,lrecBin.Code,lrecBin."Zone Code",ptxtMessage);
+            EXIT;
+          END;
 
           //Move to new bin
           lrecBinFrom.GET(lrecOpenTransOutb."Location (Take)",lrecOpenTransOutb."Bin (Take)");
@@ -2486,8 +2506,10 @@ OBJECT Codeunit 2051549 WMS Scan Outbound Functions
       ----------
       Project Distec
       ---------------
+      DISTEC   2012-03-25   FGOT   Changed code in function "fctOrderpicking9"
       DISTEC   2012-02-22   FGOT   Added function "fctLinkShippingAgentBarcode"
       DISTEC   2012-04-24   FGAS   Added function "fctOrderpicking7","fctOrderpicking8","fctOrderpicking9"
+
       Project SphinxWMS
       ------------------
       WMS0.015    2011-07-12   FGOT   Added function "fctOrderpicking0"
